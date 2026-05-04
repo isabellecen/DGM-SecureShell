@@ -1,0 +1,235 @@
+import { sql } from "drizzle-orm";
+import {
+  pgTable,
+  text,
+  varchar,
+  integer,
+  boolean,
+  timestamp,
+  jsonb,
+  serial,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+import { createInsertSchema } from "drizzle-zod";
+import { z } from "zod";
+
+export const customers = pgTable("customers", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+});
+
+export const insertCustomerSchema = createInsertSchema(customers).omit({ id: true });
+export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
+export type Customer = typeof customers.$inferSelect;
+
+export const jobs = pgTable("jobs", {
+  id: serial("id").primaryKey(),
+  customerId: integer("customer_id").references(() => customers.id),
+  name: text("name").notNull(),
+  systemType: text("system_type").notNull(), // VEEAM, PBS, SYNOLOGY
+  scheduleType: text("schedule_type").notNull().default("daily"), // daily, weekly
+  scheduleTime: text("schedule_time").notNull().default("02:00"),
+  daysOfWeek: text("days_of_week").array().default(sql`'{}'::text[]`),
+  windowHours: integer("window_hours").notNull().default(6),
+  longRunning: boolean("long_running").notNull().default(false),
+  longWindowHours: integer("long_window_hours").default(24),
+  enabled: boolean("enabled").notNull().default(true),
+});
+
+export const insertJobSchema = createInsertSchema(jobs).omit({ id: true });
+export type InsertJob = z.infer<typeof insertJobSchema>;
+export type Job = typeof jobs.$inferSelect;
+
+export const jobRules = pgTable("job_rules", {
+  id: serial("id").primaryKey(),
+  jobId: integer("job_id").references(() => jobs.id).notNull(),
+  senderMatch: text("sender_match"),
+  subjectMatch: text("subject_match"),
+  bodyMatch: text("body_match"),
+  priority: integer("priority").notNull().default(0),
+});
+
+export const insertJobRuleSchema = createInsertSchema(jobRules).omit({ id: true });
+export type InsertJobRule = z.infer<typeof insertJobRuleSchema>;
+export type JobRule = typeof jobRules.$inferSelect;
+
+export const expectedRuns = pgTable("expected_runs", {
+  id: serial("id").primaryKey(),
+  jobId: integer("job_id").references(() => jobs.id).notNull(),
+  scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+  deadlineAt: timestamp("deadline_at", { withTimezone: true }).notNull(),
+  status: text("status").notNull().default("PENDING"), // PENDING, OK, WARN, FAIL, MISSING
+  linkedEventId: integer("linked_event_id"),
+});
+
+export const insertExpectedRunSchema = createInsertSchema(expectedRuns).omit({ id: true });
+export type InsertExpectedRun = z.infer<typeof insertExpectedRunSchema>;
+export type ExpectedRun = typeof expectedRuns.$inferSelect;
+
+export const emails = pgTable("emails", {
+  id: serial("id").primaryKey(),
+  folder: text("folder").notNull(),
+  uidvalidity: integer("uidvalidity").notNull(),
+  uid: integer("uid").notNull(),
+  messageId: text("message_id"),
+  fromAddr: text("from_addr"),
+  subject: text("subject"),
+  receivedAt: timestamp("received_at", { withTimezone: true }),
+  snippet: text("snippet"),
+  rawExcerpt: text("raw_excerpt"),
+  ingestedOk: boolean("ingested_ok").notNull().default(false),
+  matchedJobId: integer("matched_job_id").references(() => jobs.id),
+}, (table) => [
+  uniqueIndex("emails_folder_uid_uidvalidity_idx").on(table.folder, table.uidvalidity, table.uid),
+]);
+
+export const insertEmailSchema = createInsertSchema(emails).omit({ id: true });
+export type InsertEmail = z.infer<typeof insertEmailSchema>;
+export type Email = typeof emails.$inferSelect;
+
+export const events = pgTable("events", {
+  id: serial("id").primaryKey(),
+  jobId: integer("job_id").references(() => jobs.id).notNull(),
+  expectedRunId: integer("expected_run_id").references(() => expectedRuns.id),
+  status: text("status").notNull(), // OK, WARN, FAIL, UNKNOWN
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
+  emailId: integer("email_id").references(() => emails.id),
+});
+
+export const insertEventSchema = createInsertSchema(events).omit({ id: true });
+export type InsertEvent = z.infer<typeof insertEventSchema>;
+export type Event = typeof events.$inferSelect;
+
+export const incidents = pgTable("incidents", {
+  id: serial("id").primaryKey(),
+  sourceType: text("source_type").notNull(), // BACKUP, PROXMOX, MONITOR
+  sourceId: integer("source_id"),
+  severity: text("severity").notNull(), // INFO, WARN, CRIT
+  title: text("title").notNull(),
+  details: text("details"),
+  state: text("state").notNull().default("OPEN"), // OPEN, ACKED, RESOLVED
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const insertIncidentSchema = createInsertSchema(incidents).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertIncident = z.infer<typeof insertIncidentSchema>;
+export type Incident = typeof incidents.$inferSelect;
+
+export const recipients = pgTable("recipients", {
+  id: serial("id").primaryKey(),
+  customerId: integer("customer_id").references(() => customers.id),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  type: text("type").notNull().default("TECH"), // TECH, CLIENT
+  enabled: boolean("enabled").notNull().default(true),
+});
+
+export const insertRecipientSchema = createInsertSchema(recipients).omit({ id: true });
+export type InsertRecipient = z.infer<typeof insertRecipientSchema>;
+export type Recipient = typeof recipients.$inferSelect;
+
+export const notificationRoutes = pgTable("notification_routes", {
+  id: serial("id").primaryKey(),
+  scopeType: text("scope_type").notNull().default("GLOBAL"), // GLOBAL, CUSTOMER, JOB
+  scopeId: integer("scope_id"),
+  eventType: text("event_type").notNull(), // FAIL, MISSING, WARN, DAILY_REPORT, MONITOR_DOWN
+  severityMin: text("severity_min").notNull().default("WARN"),
+  recipientsJson: jsonb("recipients_json"),
+});
+
+export const insertNotificationRouteSchema = createInsertSchema(notificationRoutes).omit({ id: true });
+export type InsertNotificationRoute = z.infer<typeof insertNotificationRouteSchema>;
+export type NotificationRoute = typeof notificationRoutes.$inferSelect;
+
+export const proxmoxHosts = pgTable("proxmox_hosts", {
+  id: serial("id").primaryKey(),
+  customerId: integer("customer_id").references(() => customers.id),
+  name: text("name").notNull(),
+  host: text("host").notNull(),
+  port: integer("port").notNull().default(22),
+  username: text("username").notNull(),
+  password: text("password").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  lastCheckAt: timestamp("last_check_at", { withTimezone: true }),
+  lastStatus: text("last_status").default("UNKNOWN"), // OK, WARN, CRIT, UNKNOWN
+  lastStatusDetails: jsonb("last_status_details"),
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+});
+
+export const insertProxmoxHostSchema = createInsertSchema(proxmoxHosts).omit({
+  id: true,
+  lastCheckAt: true,
+  lastStatus: true,
+  lastStatusDetails: true,
+  consecutiveFailures: true,
+});
+export type InsertProxmoxHost = z.infer<typeof insertProxmoxHostSchema>;
+export type ProxmoxHost = typeof proxmoxHosts.$inferSelect;
+
+export const proxmoxChecks = pgTable("proxmox_checks", {
+  id: serial("id").primaryKey(),
+  hostId: integer("host_id").references(() => proxmoxHosts.id).notNull(),
+  checkedAt: timestamp("checked_at", { withTimezone: true }).notNull().defaultNow(),
+  overallStatus: text("overall_status").notNull(), // OK, WARN, CRIT, UNKNOWN
+  storageType: text("storage_type"), // ZFS, MDADM, RAID, MIXED, UNKNOWN
+  payloadJson: jsonb("payload_json"),
+  monitoringError: text("monitoring_error"), // SSH_TIMEOUT, AUTH_FAILED, SUDO_DENIED, TOOL_MISSING
+});
+
+export const insertProxmoxCheckSchema = createInsertSchema(proxmoxChecks).omit({ id: true });
+export type InsertProxmoxCheck = z.infer<typeof insertProxmoxCheckSchema>;
+export type ProxmoxCheck = typeof proxmoxChecks.$inferSelect;
+
+export const backupTargets = pgTable("backup_targets", {
+  id: serial("id").primaryKey(),
+  customerId: integer("customer_id").references(() => customers.id),
+  name: text("name").notNull(),
+  type: text("type").notNull(), // SYNOLOGY, PBS
+  host: text("host").notNull(),
+  port: integer("port").notNull().default(443),
+  username: text("username").notNull(),
+  password: text("password").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  totalBytes: text("total_bytes"),
+  usedBytes: text("used_bytes"),
+  lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
+  pollStatus: text("poll_status").default("UNKNOWN"), // OK, ERROR, UNKNOWN
+  pollError: text("poll_error"),
+  datastoresJson: jsonb("datastores_json"),
+});
+
+export const insertBackupTargetSchema = createInsertSchema(backupTargets).omit({
+  id: true,
+  totalBytes: true,
+  usedBytes: true,
+  lastPolledAt: true,
+  pollStatus: true,
+  pollError: true,
+  datastoresJson: true,
+});
+export type InsertBackupTarget = z.infer<typeof insertBackupTargetSchema>;
+export type BackupTarget = typeof backupTargets.$inferSelect;
+
+export const imapCheckpoints = pgTable("imap_checkpoints", {
+  id: serial("id").primaryKey(),
+  folder: text("folder").notNull().unique(),
+  uidvalidity: integer("uidvalidity").notNull(),
+  lastSeenUid: integer("last_seen_uid").notNull().default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const insertImapCheckpointSchema = createInsertSchema(imapCheckpoints).omit({ id: true, updatedAt: true });
+export type InsertImapCheckpoint = z.infer<typeof insertImapCheckpointSchema>;
+export type ImapCheckpoint = typeof imapCheckpoints.$inferSelect;
+
+export const appSettings = pgTable("app_settings", {
+  id: serial("id").primaryKey(),
+  key: text("key").notNull().unique(),
+  value: text("value"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const insertAppSettingSchema = createInsertSchema(appSettings).omit({ id: true, updatedAt: true });
+export type InsertAppSetting = z.infer<typeof insertAppSettingSchema>;
+export type AppSetting = typeof appSettings.$inferSelect;
