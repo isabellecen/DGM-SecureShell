@@ -150,6 +150,8 @@ export const proxmoxHosts = pgTable("proxmox_hosts", {
   port: integer("port").notNull().default(22),
   username: text("username").notNull(),
   password: text("password").notNull(),
+  hostKeyFingerprint: text("host_key_fingerprint"),
+  allowInsecureHostKey: boolean("allow_insecure_host_key").notNull().default(false),
   enabled: boolean("enabled").notNull().default(true),
   lastCheckAt: timestamp("last_check_at", { withTimezone: true }),
   lastStatus: text("last_status").default("UNKNOWN"), // OK, WARN, CRIT, UNKNOWN
@@ -190,6 +192,8 @@ export const backupTargets = pgTable("backup_targets", {
   port: integer("port").notNull().default(443),
   username: text("username").notNull(),
   password: text("password").notNull(),
+  tlsFingerprint: text("tls_fingerprint"),
+  allowInsecureTls: boolean("allow_insecure_tls").notNull().default(false),
   enabled: boolean("enabled").notNull().default(true),
   totalBytes: text("total_bytes"),
   usedBytes: text("used_bytes"),

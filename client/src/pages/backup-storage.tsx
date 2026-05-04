@@ -131,6 +131,8 @@ function TargetDialog({
   const [port, setPort] = useState(target?.port?.toString() || "8007");
   const [username, setUsername] = useState(target?.username || "root@pam");
   const [password, setPassword] = useState("");
+  const [tlsFingerprint, setTlsFingerprint] = useState(target?.tlsFingerprint || "");
+  const [allowInsecureTls, setAllowInsecureTls] = useState(target?.allowInsecureTls ?? false);
   const [customerId, setCustomerId] = useState(target?.customerId?.toString() || "none");
   const [enabled, setEnabled] = useState(target?.enabled !== false);
 
@@ -142,6 +144,8 @@ function TargetDialog({
         host,
         port: parseInt(port) || (type === "PBS" ? 8007 : 5001),
         username,
+        tlsFingerprint: tlsFingerprint || null,
+        allowInsecureTls,
         customerId: customerId && customerId !== "none" ? parseInt(customerId) : null,
         enabled,
       };
@@ -241,6 +245,28 @@ function TargetDialog({
                 data-testid="input-target-pass"
               />
             </div>
+          </div>
+          <div>
+            <Label htmlFor="target-tls-fingerprint">TLS Certificate Fingerprint</Label>
+            <Input
+              id="target-tls-fingerprint"
+              value={tlsFingerprint}
+              onChange={(e) => setTlsFingerprint(e.target.value)}
+              placeholder="SHA256 fingerprint"
+              data-testid="input-target-tls-fingerprint"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <Label htmlFor="allow-insecure-tls">Allow self-signed TLS</Label>
+              <p className="text-xs text-muted-foreground mt-0.5">Prefer a pinned fingerprint for production targets.</p>
+            </div>
+            <Switch
+              id="allow-insecure-tls"
+              checked={allowInsecureTls}
+              onCheckedChange={setAllowInsecureTls}
+              data-testid="switch-allow-insecure-tls"
+            />
           </div>
           <div>
             <Label>Customer</Label>

@@ -118,7 +118,7 @@ function RecipientDialog({
         name,
         email,
         type,
-        customerId: customerId ? parseInt(customerId) : null,
+        customerId: customerId && customerId !== "none" ? parseInt(customerId) : null,
         enabled,
       };
       if (isEditing) {
@@ -542,6 +542,7 @@ export default function Settings() {
       </Tabs>
 
       <RecipientDialog
+        key={editingRecipient?.id ?? "new"}
         recipient={editingRecipient}
         customers={customers || []}
         open={recipientDialogOpen}

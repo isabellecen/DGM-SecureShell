@@ -15,6 +15,10 @@ import {
   backupTargets, type BackupTarget, type InsertBackupTarget,
   appSettings, type AppSetting, type InsertAppSetting,
 } from "@shared/schema";
+import { decryptSecret, encryptSecret, isSecretSettingKey } from "./crypto";
+
+type WithCustomerName = { customerName?: string | null };
+type WithJobName = { jobName?: string | null };
 
 export interface IStorage {
   getCustomers(): Promise<Customer[]>;
@@ -23,16 +27,16 @@ export interface IStorage {
   updateCustomer(id: number, data: Partial<InsertCustomer>): Promise<Customer | undefined>;
   deleteCustomer(id: number): Promise<void>;
 
-  getJobs(): Promise<(Job & { customerName?: string })[]>;
+  getJobs(): Promise<(Job & WithCustomerName)[]>;
   getJob(id: number): Promise<Job | undefined>;
   createJob(data: InsertJob): Promise<Job>;
   updateJob(id: number, data: Partial<InsertJob>): Promise<Job | undefined>;
   deleteJob(id: number): Promise<void>;
 
-  getProxmoxHosts(): Promise<(ProxmoxHost & { customerName?: string })[]>;
+  getProxmoxHosts(): Promise<(ProxmoxHost & WithCustomerName)[]>;
   getProxmoxHost(id: number): Promise<ProxmoxHost | undefined>;
   createProxmoxHost(data: InsertProxmoxHost): Promise<ProxmoxHost>;
-  updateProxmoxHost(id: number, data: Partial<any>): Promise<ProxmoxHost | undefined>;
+  updateProxmoxHost(id: number, data: ProxmoxHostUpdate): Promise<ProxmoxHost | undefined>;
   deleteProxmoxHost(id: number): Promise<void>;
 
   getIncidents(): Promise<Incident[]>;
@@ -49,7 +53,7 @@ export interface IStorage {
   getSettings(): Promise<AppSetting[]>;
   upsertSetting(key: string, value: string): Promise<AppSetting>;
 
-  getExpectedRuns(limit?: number): Promise<(ExpectedRun & { jobName?: string })[]>;
+  getExpectedRuns(limit?: number): Promise<(ExpectedRun & WithJobName)[]>;
 
   getJobRules(jobId?: number): Promise<JobRule[]>;
   createJobRule(data: InsertJobRule): Promise<JobRule>;
@@ -57,19 +61,19 @@ export interface IStorage {
 
   getEmails(limit?: number): Promise<Email[]>;
   getUnmatchedEmails(): Promise<Email[]>;
-  getMatchedEmails(limit?: number): Promise<(Email & { jobName?: string })[]>;
+  getMatchedEmails(limit?: number): Promise<(Email & WithJobName)[]>;
   getEmail(id: number): Promise<Email | undefined>;
   linkEmailToJob(emailId: number, jobId: number): Promise<Email | undefined>;
   getUnmatchedEmailCount(): Promise<number>;
-  getEvents(limit?: number): Promise<(Event & { jobName?: string })[]>;
+  getEvents(limit?: number): Promise<(Event & WithJobName)[]>;
 
   getProxmoxChecks(hostId: number, limit?: number): Promise<ProxmoxCheck[]>;
   createProxmoxCheck(data: InsertProxmoxCheck): Promise<ProxmoxCheck>;
 
-  getBackupTargets(): Promise<(BackupTarget & { customerName?: string })[]>;
+  getBackupTargets(): Promise<(BackupTarget & WithCustomerName)[]>;
   getBackupTarget(id: number): Promise<BackupTarget | undefined>;
   createBackupTarget(data: InsertBackupTarget): Promise<BackupTarget>;
-  updateBackupTarget(id: number, data: Partial<any>): Promise<BackupTarget | undefined>;
+  updateBackupTarget(id: number, data: BackupTargetUpdate): Promise<BackupTarget | undefined>;
   deleteBackupTarget(id: number): Promise<void>;
 
   getNotificationRoutes(): Promise<NotificationRoute[]>;
@@ -81,14 +85,38 @@ export interface IStorage {
     enabledJobs: number;
     totalHosts: number;
     openIncidents: number;
-    recentRuns: (ExpectedRun & { jobName?: string })[];
+    recentRuns: (ExpectedRun & WithJobName)[];
     recentIncidents: Incident[];
     hostStatuses: { status: string; count: number }[];
     jobsBySystem: { systemType: string; count: number }[];
   }>;
 }
 
+type ProxmoxHostUpdate = Partial<InsertProxmoxHost> & {
+  lastCheckAt?: Date;
+  lastStatus?: string | null;
+  lastStatusDetails?: unknown;
+  consecutiveFailures?: number;
+};
+
+type BackupTargetUpdate = Partial<InsertBackupTarget> & {
+  totalBytes?: string | null;
+  usedBytes?: string | null;
+  lastPolledAt?: Date;
+  pollStatus?: string | null;
+  pollError?: string | null;
+  datastoresJson?: unknown;
+};
+
 export class DatabaseStorage implements IStorage {
+  private decryptProxmoxHost<T extends { password: string }>(host: T): T {
+    return { ...host, password: decryptSecret(host.password) || "" };
+  }
+
+  private decryptBackupTarget<T extends { password: string }>(target: T): T {
+    return { ...target, password: decryptSecret(target.password) || "" };
+  }
+
   async getCustomers(): Promise<Customer[]> {
     return db.select().from(customers);
   }
@@ -112,7 +140,7 @@ export class DatabaseStorage implements IStorage {
     await db.delete(customers).where(eq(customers.id, id));
   }
 
-  async getJobs(): Promise<(Job & { customerName?: string })[]> {
+  async getJobs(): Promise<(Job & WithCustomerName)[]> {
     const result = await db
       .select({
         id: jobs.id,
@@ -152,7 +180,7 @@ export class DatabaseStorage implements IStorage {
     await db.delete(jobs).where(eq(jobs.id, id));
   }
 
-  async getProxmoxHosts(): Promise<(ProxmoxHost & { customerName?: string })[]> {
+  async getProxmoxHosts(): Promise<(ProxmoxHost & WithCustomerName)[]> {
     const result = await db
       .select({
         id: proxmoxHosts.id,
@@ -162,6 +190,8 @@ export class DatabaseStorage implements IStorage {
         port: proxmoxHosts.port,
         username: proxmoxHosts.username,
         password: proxmoxHosts.password,
+        hostKeyFingerprint: proxmoxHosts.hostKeyFingerprint,
+        allowInsecureHostKey: proxmoxHosts.allowInsecureHostKey,
         enabled: proxmoxHosts.enabled,
         lastCheckAt: proxmoxHosts.lastCheckAt,
         lastStatus: proxmoxHosts.lastStatus,
@@ -171,22 +201,29 @@ export class DatabaseStorage implements IStorage {
       })
       .from(proxmoxHosts)
       .leftJoin(customers, eq(proxmoxHosts.customerId, customers.id));
-    return result;
+    return result.map((host) => this.decryptProxmoxHost(host));
   }
 
   async getProxmoxHost(id: number): Promise<ProxmoxHost | undefined> {
     const [result] = await db.select().from(proxmoxHosts).where(eq(proxmoxHosts.id, id));
-    return result;
+    return result ? this.decryptProxmoxHost(result) : undefined;
   }
 
   async createProxmoxHost(data: InsertProxmoxHost): Promise<ProxmoxHost> {
-    const [result] = await db.insert(proxmoxHosts).values(data).returning();
-    return result;
+    const [result] = await db.insert(proxmoxHosts).values({
+      ...data,
+      password: encryptSecret(data.password) || "",
+    }).returning();
+    return this.decryptProxmoxHost(result);
   }
 
-  async updateProxmoxHost(id: number, data: Partial<any>): Promise<ProxmoxHost | undefined> {
-    const [result] = await db.update(proxmoxHosts).set(data).where(eq(proxmoxHosts.id, id)).returning();
-    return result;
+  async updateProxmoxHost(id: number, data: ProxmoxHostUpdate): Promise<ProxmoxHost | undefined> {
+    const updateData: ProxmoxHostUpdate = { ...data };
+    if (typeof data.password === "string") {
+      updateData.password = encryptSecret(data.password) || "";
+    }
+    const [result] = await db.update(proxmoxHosts).set(updateData).where(eq(proxmoxHosts.id, id)).returning();
+    return result ? this.decryptProxmoxHost(result) : undefined;
   }
 
   async deleteProxmoxHost(id: number): Promise<void> {
@@ -241,24 +278,37 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getSettings(): Promise<AppSetting[]> {
-    return db.select().from(appSettings);
+    const result = await db.select().from(appSettings);
+    return result.map((setting) => ({
+      ...setting,
+      value: isSecretSettingKey(setting.key) ? "" : setting.value,
+    }));
   }
 
   async upsertSetting(key: string, value: string): Promise<AppSetting> {
     const [existing] = await db.select().from(appSettings).where(eq(appSettings.key, key));
+    const secretValue = isSecretSettingKey(key);
+    const storedValue = secretValue ? encryptSecret(value) || "" : value;
+
     if (existing) {
+      if (secretValue && value === "") {
+        return {
+          ...existing,
+          value: "",
+        };
+      }
       const [result] = await db
         .update(appSettings)
-        .set({ value, updatedAt: new Date() })
+        .set({ value: storedValue, updatedAt: new Date() })
         .where(eq(appSettings.key, key))
         .returning();
-      return result;
+      return { ...result, value: secretValue ? "" : result.value };
     }
-    const [result] = await db.insert(appSettings).values({ key, value }).returning();
-    return result;
+    const [result] = await db.insert(appSettings).values({ key, value: storedValue }).returning();
+    return { ...result, value: secretValue ? "" : result.value };
   }
 
-  async getExpectedRuns(limit = 10): Promise<(ExpectedRun & { jobName?: string })[]> {
+  async getExpectedRuns(limit = 10): Promise<(ExpectedRun & WithJobName)[]> {
     const result = await db
       .select({
         id: expectedRuns.id,
@@ -300,7 +350,7 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(emails).where(sql`${emails.matchedJobId} IS NULL`).orderBy(desc(emails.receivedAt));
   }
 
-  async getMatchedEmails(limit = 50): Promise<(Email & { jobName?: string })[]> {
+  async getMatchedEmails(limit = 50): Promise<(Email & WithJobName)[]> {
     const result = await db
       .select({
         id: emails.id,
@@ -346,7 +396,7 @@ export class DatabaseStorage implements IStorage {
     return result?.count || 0;
   }
 
-  async getEvents(limit = 50): Promise<(Event & { jobName?: string })[]> {
+  async getEvents(limit = 50): Promise<(Event & WithJobName)[]> {
     const result = await db
       .select({
         id: events.id,
@@ -378,7 +428,7 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async getBackupTargets(): Promise<(BackupTarget & { customerName?: string })[]> {
+  async getBackupTargets(): Promise<(BackupTarget & WithCustomerName)[]> {
     const result = await db
       .select({
         id: backupTargets.id,
@@ -389,6 +439,8 @@ export class DatabaseStorage implements IStorage {
         port: backupTargets.port,
         username: backupTargets.username,
         password: backupTargets.password,
+        tlsFingerprint: backupTargets.tlsFingerprint,
+        allowInsecureTls: backupTargets.allowInsecureTls,
         enabled: backupTargets.enabled,
         totalBytes: backupTargets.totalBytes,
         usedBytes: backupTargets.usedBytes,
@@ -400,22 +452,29 @@ export class DatabaseStorage implements IStorage {
       })
       .from(backupTargets)
       .leftJoin(customers, eq(backupTargets.customerId, customers.id));
-    return result;
+    return result.map((target) => this.decryptBackupTarget(target));
   }
 
   async getBackupTarget(id: number): Promise<BackupTarget | undefined> {
     const [result] = await db.select().from(backupTargets).where(eq(backupTargets.id, id));
-    return result;
+    return result ? this.decryptBackupTarget(result) : undefined;
   }
 
   async createBackupTarget(data: InsertBackupTarget): Promise<BackupTarget> {
-    const [result] = await db.insert(backupTargets).values(data).returning();
-    return result;
+    const [result] = await db.insert(backupTargets).values({
+      ...data,
+      password: encryptSecret(data.password) || "",
+    }).returning();
+    return this.decryptBackupTarget(result);
   }
 
-  async updateBackupTarget(id: number, data: Partial<any>): Promise<BackupTarget | undefined> {
-    const [result] = await db.update(backupTargets).set(data).where(eq(backupTargets.id, id)).returning();
-    return result;
+  async updateBackupTarget(id: number, data: BackupTargetUpdate): Promise<BackupTarget | undefined> {
+    const updateData: BackupTargetUpdate = { ...data };
+    if (typeof data.password === "string") {
+      updateData.password = encryptSecret(data.password) || "";
+    }
+    const [result] = await db.update(backupTargets).set(updateData).where(eq(backupTargets.id, id)).returning();
+    return result ? this.decryptBackupTarget(result) : undefined;
   }
 
   async deleteBackupTarget(id: number): Promise<void> {

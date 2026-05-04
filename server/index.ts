@@ -4,6 +4,9 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDatabase } from "./seed";
+import { registerAuth } from "./auth";
+import { startScheduler } from "./scheduler";
+import { ZodError } from "zod";
 
 const app = express();
 const httpServer = createServer(app);
@@ -38,22 +41,11 @@ export function log(message: string, source = "express") {
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
 
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
       log(logLine);
     }
   });
@@ -62,17 +54,26 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  await seedDatabase().catch((err) => {
-    console.error("Seed error (non-fatal):", err.message);
-  });
+  if (process.env.SEED_ON_BOOT === "1" || process.env.NODE_ENV !== "production") {
+    await seedDatabase().catch((err) => {
+      console.error("Seed error (non-fatal):", err.message);
+    });
+  }
 
+  registerAuth(app);
   await registerRoutes(httpServer, app);
+  startScheduler();
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
+    const status = err instanceof ZodError ? 400 : err.status || err.statusCode || 500;
+    const message =
+      err instanceof ZodError
+        ? err.issues.map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`).join("; ")
+        : err.message || "Internal Server Error";
 
-    console.error("Internal Server Error:", err);
+    if (status >= 500) {
+      console.error("Internal Server Error:", err);
+    }
 
     if (res.headersSent) {
       return next(err);

@@ -1,9 +1,80 @@
 import type { Express } from "express";
-import { createServer, type Server } from "http";
+import type { Server } from "http";
 import { storage } from "./storage";
-import { collectProxmoxHealth } from "./proxmoxCollector";
-import { pollBackupTarget } from "./backupPoller";
+import { pollBackupTargetAndPersist, runProxmoxHostCheck } from "./monitoring";
+import { z } from "zod";
 
+const idParamSchema = z.coerce.number().int().positive();
+const nullableIdSchema = z.union([z.coerce.number().int().positive(), z.null()]);
+const systemTypeSchema = z.enum(["VEEAM", "PBS", "SYNOLOGY"]);
+const backupTargetTypeSchema = z.enum(["SYNOLOGY", "PBS"]);
+
+const customerPatchSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+}).strict();
+const customerCreateSchema = customerPatchSchema.required();
+
+const jobCreateSchema = z.object({
+  name: z.string().trim().min(1),
+  systemType: systemTypeSchema,
+  customerId: nullableIdSchema.optional(),
+  scheduleType: z.enum(["daily", "weekly"]).default("daily"),
+  scheduleTime: z.string().regex(/^\d{2}:\d{2}$/).default("02:00"),
+  windowHours: z.coerce.number().int().min(1).max(168).default(6),
+  enabled: z.boolean().default(true),
+  longRunning: z.boolean().default(false),
+  longWindowHours: z.coerce.number().int().min(1).max(336).default(24),
+  daysOfWeek: z.array(z.string()).default([]),
+}).strict();
+
+const jobPatchSchema = jobCreateSchema.partial().strict();
+
+const proxmoxHostCreateSchema = z.object({
+  name: z.string().trim().min(1),
+  host: z.string().trim().min(1),
+  port: z.coerce.number().int().min(1).max(65535).default(22),
+  username: z.string().trim().min(1),
+  password: z.string().min(1),
+  hostKeyFingerprint: z.string().trim().nullable().optional(),
+  allowInsecureHostKey: z.boolean().default(false),
+  customerId: nullableIdSchema.optional(),
+  enabled: z.boolean().default(true),
+}).strict();
+
+const proxmoxHostPatchSchema = proxmoxHostCreateSchema.partial().strict();
+
+const backupTargetCreateSchema = z.object({
+  name: z.string().trim().min(1),
+  type: backupTargetTypeSchema,
+  host: z.string().trim().min(1),
+  port: z.coerce.number().int().min(1).max(65535).optional(),
+  username: z.string().trim().min(1),
+  password: z.string().min(1),
+  tlsFingerprint: z.string().trim().nullable().optional(),
+  allowInsecureTls: z.boolean().default(false),
+  customerId: nullableIdSchema.optional(),
+  enabled: z.boolean().default(true),
+}).strict();
+
+const backupTargetPatchSchema = backupTargetCreateSchema.partial().strict();
+
+const recipientCreateSchema = z.object({
+  name: z.string().trim().min(1),
+  email: z.string().email(),
+  type: z.enum(["TECH", "CLIENT"]).default("TECH"),
+  customerId: nullableIdSchema.optional(),
+  enabled: z.boolean().default(true),
+}).strict();
+const recipientPatchSchema = recipientCreateSchema.partial().strict();
+
+const settingSchema = z.object({
+  key: z.string().trim().min(1),
+  value: z.string().default(""),
+}).strict();
+
+function parseId(value: unknown) {
+  return idParamSchema.parse(value);
+}
 
 export async function registerRoutes(
   httpServer: Server,
@@ -23,23 +94,21 @@ export async function registerRoutes(
   });
 
   app.post("/api/customers", async (req, res) => {
-    const { name } = req.body;
-    if (!name || typeof name !== "string") {
-      return res.status(400).json({ message: "Name is required" });
-    }
-    const result = await storage.createCustomer({ name });
+    const data = customerCreateSchema.parse(req.body);
+    const result = await storage.createCustomer(data);
     res.status(201).json(result);
   });
 
   app.patch("/api/customers/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
-    const result = await storage.updateCustomer(id, req.body);
+    const id = parseId(req.params.id);
+    const data = customerPatchSchema.parse(req.body);
+    const result = await storage.updateCustomer(id, data);
     if (!result) return res.status(404).json({ message: "Not found" });
     res.json(result);
   });
 
   app.delete("/api/customers/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     await storage.deleteCustomer(id);
     res.status(204).send();
   });
@@ -51,34 +120,24 @@ export async function registerRoutes(
   });
 
   app.post("/api/jobs", async (req, res) => {
-    const { name, systemType, customerId, scheduleType, scheduleTime, windowHours, enabled, longRunning, longWindowHours, daysOfWeek } = req.body;
-    if (!name || !systemType) {
-      return res.status(400).json({ message: "Name and systemType are required" });
-    }
+    const data = jobCreateSchema.parse(req.body);
     const result = await storage.createJob({
-      name,
-      systemType,
-      customerId: customerId || null,
-      scheduleType: scheduleType || "daily",
-      scheduleTime: scheduleTime || "02:00",
-      windowHours: windowHours || 6,
-      enabled: enabled !== false,
-      longRunning: longRunning || false,
-      longWindowHours: longWindowHours || 24,
-      daysOfWeek: daysOfWeek || [],
+      ...data,
+      customerId: data.customerId ?? null,
     });
     res.status(201).json(result);
   });
 
   app.patch("/api/jobs/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
-    const result = await storage.updateJob(id, req.body);
+    const id = parseId(req.params.id);
+    const data = jobPatchSchema.parse(req.body);
+    const result = await storage.updateJob(id, data);
     if (!result) return res.status(404).json({ message: "Not found" });
     res.json(result);
   });
 
   app.delete("/api/jobs/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     await storage.deleteJob(id);
     res.status(204).send();
   });
@@ -94,7 +153,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/proxmox-hosts/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     const host = await storage.getProxmoxHost(id);
     if (!host) return res.status(404).json({ message: "Not found" });
     const allHosts = await storage.getProxmoxHosts();
@@ -103,31 +162,21 @@ export async function registerRoutes(
   });
 
   app.post("/api/proxmox-hosts", async (req, res) => {
-    const { name, host, port, username, password, customerId, enabled } = req.body;
-    if (!name || !host || !username || !password) {
-      return res.status(400).json({ message: "Name, host, username, and password are required" });
-    }
+    const data = proxmoxHostCreateSchema.parse(req.body);
     const result = await storage.createProxmoxHost({
-      name,
-      host,
-      port: port || 22,
-      username,
-      password,
-      customerId: customerId || null,
-      enabled: enabled !== false,
+      ...data,
+      customerId: data.customerId ?? null,
+      hostKeyFingerprint: data.hostKeyFingerprint || null,
     });
     res.status(201).json({ ...result, password: "***" });
   });
 
   app.patch("/api/proxmox-hosts/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     const existing = await storage.getProxmoxHost(id);
     if (!existing) return res.status(404).json({ message: "Not found" });
 
-    const updateData: any = { ...req.body };
-    if (!updateData.password) {
-      delete updateData.password;
-    }
+    const updateData = proxmoxHostPatchSchema.parse(req.body);
 
     const result = await storage.updateProxmoxHost(id, updateData);
     if (!result) return res.status(404).json({ message: "Not found" });
@@ -135,44 +184,22 @@ export async function registerRoutes(
   });
 
   app.delete("/api/proxmox-hosts/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     await storage.deleteProxmoxHost(id);
     res.status(204).send();
   });
 
   app.get("/api/proxmox-hosts/:id/checks", async (req, res) => {
-    const id = parseInt(req.params.id);
-    const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
+    const id = parseId(req.params.id);
+    const limit = req.query.limit ? z.coerce.number().int().min(1).max(100).parse(req.query.limit) : 20;
     const checks = await storage.getProxmoxChecks(id, limit);
     res.json(checks);
   });
 
 app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
-  const id = parseInt(req.params.id);
-  const host = await storage.getProxmoxHost(id);
-  if (!host) return res.status(404).json({ message: "Host not found" });
-
-  const result = await collectProxmoxHealth({
-    host: host.host,
-    port: host.port,
-    username: host.username,
-    password: host.password,
-  });
-
-  const check = await storage.createProxmoxCheck({
-    hostId: id,
-    checkedAt: new Date(),
-    overallStatus: result.overall_status,
-    storageType: result.storage_type,
-    payloadJson: result.components,
-    monitoringError: result.monitoring_error,
-  });
-
-  await storage.updateProxmoxHost(id, {
-    lastCheckAt: new Date(),
-    lastStatus: result.overall_status,
-    lastStatusDetails: result,
-  });
+  const id = parseId(req.params.id);
+  const check = await runProxmoxHostCheck(id);
+  if (!check) return res.status(404).json({ message: "Host not found" });
 
   res.json(check);
 });
@@ -190,7 +217,7 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
   });
 
   app.get("/api/backup-targets/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     const target = await storage.getBackupTarget(id);
     if (!target) return res.status(404).json({ message: "Not found" });
     const allTargets = await storage.getBackupTargets();
@@ -199,74 +226,39 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
   });
 
   app.post("/api/backup-targets", async (req, res) => {
-    const { name, type, host, port, username, password, customerId, enabled } = req.body;
-    if (!name || !type || !host || !username || !password) {
-      return res.status(400).json({ message: "Name, type, host, username, and password are required" });
-    }
-    if (!["SYNOLOGY", "PBS"].includes(type)) {
-      return res.status(400).json({ message: "Type must be SYNOLOGY or PBS" });
-    }
+    const data = backupTargetCreateSchema.parse(req.body);
     const result = await storage.createBackupTarget({
-      name,
-      type,
-      host,
-      port: port || 443,
-      username,
-      password,
-      customerId: customerId || null,
-      enabled: enabled !== false,
+      ...data,
+      port: data.port || (data.type === "PBS" ? 8007 : 443),
+      customerId: data.customerId ?? null,
+      tlsFingerprint: data.tlsFingerprint || null,
     });
     res.status(201).json({ ...result, password: "***" });
   });
 
   app.patch("/api/backup-targets/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     const existing = await storage.getBackupTarget(id);
     if (!existing) return res.status(404).json({ message: "Not found" });
-    const updateData: any = { ...req.body };
-    if (!updateData.password) {
-      delete updateData.password;
-    }
+    const updateData = backupTargetPatchSchema.parse(req.body);
     const result = await storage.updateBackupTarget(id, updateData);
     if (!result) return res.status(404).json({ message: "Not found" });
     res.json({ ...result, password: "***" });
   });
 
   app.delete("/api/backup-targets/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     await storage.deleteBackupTarget(id);
     res.status(204).send();
   });
 
   app.post("/api/backup-targets/:id/poll", async (req, res) => {
-    const id = parseInt(req.params.id);
-    const target = await storage.getBackupTarget(id);
+    const id = parseId(req.params.id);
+    const target = await pollBackupTargetAndPersist(id);
     if (!target) return res.status(404).json({ message: "Not found" });
-
-    const result = await pollBackupTarget({
-      type: target.type as "SYNOLOGY" | "PBS",
-      host: target.host,
-      port: target.port,
-      username: target.username,
-      password: target.password,
-    });
-
-    const updateData: Record<string, any> = {
-      lastPolledAt: new Date(),
-      pollStatus: result.pollStatus,
-      pollError: result.pollError,
-    };
-
-    if (result.pollStatus === "OK" && result.totalBytes && result.usedBytes) {
-      updateData.totalBytes = result.totalBytes;
-      updateData.usedBytes = result.usedBytes;
-      updateData.datastoresJson = result.datastoresJson;
-    }
-
-    await storage.updateBackupTarget(id, updateData);
     const allTargets = await storage.getBackupTargets();
     const withCustomer = allTargets.find(t => t.id === id);
-    res.json({ ...(withCustomer || target), ...updateData, password: "***" });
+    res.json({ ...(withCustomer || target), password: "***" });
   });
 
   // Incidents
@@ -276,11 +268,8 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
   });
 
   app.patch("/api/incidents/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
-    const { state } = req.body;
-    if (!state || !["OPEN", "ACKED", "RESOLVED"].includes(state)) {
-      return res.status(400).json({ message: "Valid state is required (OPEN, ACKED, RESOLVED)" });
-    }
+    const id = parseId(req.params.id);
+    const { state } = z.object({ state: z.enum(["OPEN", "ACKED", "RESOLVED"]) }).strict().parse(req.body);
     const result = await storage.updateIncidentState(id, state);
     if (!result) return res.status(404).json({ message: "Not found" });
     res.json(result);
@@ -293,45 +282,46 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
   });
 
   app.post("/api/recipients", async (req, res) => {
-    const { name, email, type, customerId, enabled } = req.body;
-    if (!name || !email) {
-      return res.status(400).json({ message: "Name and email are required" });
-    }
+    const { name, email, type, customerId, enabled } = recipientCreateSchema.parse(req.body);
     const result = await storage.createRecipient({
       name,
       email,
-      type: type || "TECH",
-      customerId: customerId || null,
-      enabled: enabled !== false,
+      type,
+      customerId: customerId ?? null,
+      enabled,
     });
     res.status(201).json(result);
   });
 
   app.patch("/api/recipients/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
-    const result = await storage.updateRecipient(id, req.body);
+    const id = parseId(req.params.id);
+    const data = recipientPatchSchema.parse(req.body);
+    const result = await storage.updateRecipient(id, data);
     if (!result) return res.status(404).json({ message: "Not found" });
     res.json(result);
   });
 
   app.delete("/api/recipients/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     await storage.deleteRecipient(id);
     res.status(204).send();
   });
 
   // Job Rules
   app.get("/api/job-rules", async (req, res) => {
-    const jobId = req.query.jobId ? parseInt(req.query.jobId as string) : undefined;
+    const jobId = req.query.jobId ? idParamSchema.parse(req.query.jobId) : undefined;
     const result = await storage.getJobRules(jobId);
     res.json(result);
   });
 
   app.post("/api/job-rules", async (req, res) => {
-    const { jobId, senderMatch, subjectMatch, bodyMatch, priority } = req.body;
-    if (!jobId) {
-      return res.status(400).json({ message: "jobId is required" });
-    }
+    const { jobId, senderMatch, subjectMatch, bodyMatch, priority } = z.object({
+      jobId: idParamSchema,
+      senderMatch: z.string().trim().nullable().optional(),
+      subjectMatch: z.string().trim().nullable().optional(),
+      bodyMatch: z.string().trim().nullable().optional(),
+      priority: z.coerce.number().int().default(0),
+    }).strict().parse(req.body);
     const result = await storage.createJobRule({
       jobId,
       senderMatch: senderMatch || null,
@@ -343,7 +333,7 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
   });
 
   app.delete("/api/job-rules/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     await storage.deleteJobRule(id);
     res.status(204).send();
   });
@@ -376,7 +366,7 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
   });
 
   app.get("/api/emails/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     const result = await storage.getEmail(id);
     if (!result) {
       return res.status(404).json({ message: "Email not found" });
@@ -385,11 +375,8 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
   });
 
   app.post("/api/emails/:id/link-job", async (req, res) => {
-    const emailId = parseInt(req.params.id);
-    const { jobId } = req.body;
-    if (!jobId) {
-      return res.status(400).json({ message: "jobId is required" });
-    }
+    const emailId = parseId(req.params.id);
+    const { jobId } = z.object({ jobId: idParamSchema }).strict().parse(req.body);
     const result = await storage.linkEmailToJob(emailId, jobId);
     if (!result) {
       return res.status(404).json({ message: "Email not found" });
@@ -410,22 +397,25 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
   });
 
   app.post("/api/notification-routes", async (req, res) => {
-    const { scopeType, scopeId, eventType, severityMin, recipientsJson } = req.body;
-    if (!eventType) {
-      return res.status(400).json({ message: "eventType is required" });
-    }
+    const { scopeType, scopeId, eventType, severityMin, recipientsJson } = z.object({
+      scopeType: z.enum(["GLOBAL", "CUSTOMER", "JOB"]).default("GLOBAL"),
+      scopeId: nullableIdSchema.optional(),
+      eventType: z.string().trim().min(1),
+      severityMin: z.enum(["INFO", "WARN", "CRIT"]).default("WARN"),
+      recipientsJson: z.unknown().nullable().optional(),
+    }).strict().parse(req.body);
     const result = await storage.createNotificationRoute({
-      scopeType: scopeType || "GLOBAL",
-      scopeId: scopeId || null,
+      scopeType,
+      scopeId: scopeId ?? null,
       eventType,
-      severityMin: severityMin || "WARN",
+      severityMin,
       recipientsJson: recipientsJson || null,
     });
     res.status(201).json(result);
   });
 
   app.delete("/api/notification-routes/:id", async (req, res) => {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
     await storage.deleteNotificationRoute(id);
     res.status(204).send();
   });
@@ -437,10 +427,7 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
   });
 
   app.post("/api/settings", async (req, res) => {
-    const { key, value } = req.body;
-    if (!key) {
-      return res.status(400).json({ message: "Key is required" });
-    }
+    const { key, value } = settingSchema.parse(req.body);
     const result = await storage.upsertSetting(key, value || "");
     res.json(result);
   });

@@ -68,7 +68,7 @@ function JobFormDialog({
       const payload = {
         name,
         systemType,
-        customerId: customerId ? parseInt(customerId) : null,
+        customerId: customerId && customerId !== "none" ? parseInt(customerId) : null,
         scheduleType,
         scheduleTime,
         windowHours: parseInt(windowHours) || 6,
@@ -342,6 +342,7 @@ export default function Jobs() {
       )}
 
       <JobFormDialog
+        key={editingJob?.id ?? "new"}
         job={editingJob}
         customers={customers || []}
         open={dialogOpen}

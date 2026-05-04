@@ -187,6 +187,8 @@ function HostFormDialog({
   const [port, setPort] = useState(host?.port?.toString() || "22");
   const [username, setUsername] = useState(host?.username || "root");
   const [password, setPassword] = useState("");
+  const [hostKeyFingerprint, setHostKeyFingerprint] = useState(host?.hostKeyFingerprint || "");
+  const [allowInsecureHostKey, setAllowInsecureHostKey] = useState(host?.allowInsecureHostKey ?? false);
   const [customerId, setCustomerId] = useState<string>(
     host?.customerId?.toString() || ""
   );
@@ -199,7 +201,9 @@ function HostFormDialog({
         host: hostAddr,
         port: parseInt(port) || 22,
         username,
-        customerId: customerId ? parseInt(customerId) : null,
+        hostKeyFingerprint: hostKeyFingerprint || null,
+        allowInsecureHostKey,
+        customerId: customerId && customerId !== "none" ? parseInt(customerId) : null,
         enabled,
       };
       if (password || !isEditing) {
@@ -281,6 +285,28 @@ function HostFormDialog({
                 data-testid="input-host-pass"
               />
             </div>
+          </div>
+          <div>
+            <Label htmlFor="host-key-fingerprint">SSH Host Key Fingerprint</Label>
+            <Input
+              id="host-key-fingerprint"
+              value={hostKeyFingerprint}
+              onChange={(e) => setHostKeyFingerprint(e.target.value)}
+              placeholder="SHA256 fingerprint"
+              data-testid="input-host-key-fingerprint"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <Label htmlFor="allow-insecure-host-key">Allow unknown host key</Label>
+              <p className="text-xs text-muted-foreground mt-0.5">Use only while enrolling a host fingerprint.</p>
+            </div>
+            <Switch
+              id="allow-insecure-host-key"
+              checked={allowInsecureHostKey}
+              onCheckedChange={setAllowInsecureHostKey}
+              data-testid="switch-allow-insecure-host-key"
+            />
           </div>
           <div>
             <Label>Customer</Label>
@@ -579,6 +605,7 @@ export default function Proxmox() {
       )}
 
       <HostFormDialog
+        key={editingHost?.id ?? "new"}
         host={editingHost}
         customers={customers || []}
         open={dialogOpen}

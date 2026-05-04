@@ -202,6 +202,7 @@ export default function Customers() {
       )}
 
       <CustomerFormDialog
+        key={editingCustomer?.id ?? "new"}
         customer={editingCustomer}
         open={dialogOpen}
         onOpenChange={setDialogOpen}

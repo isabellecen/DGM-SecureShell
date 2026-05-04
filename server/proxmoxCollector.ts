@@ -47,21 +47,31 @@ type CollectInput = {
   port: number;
   username: string;
   password: string;
+  hostKeyFingerprint?: string | null;
+  allowInsecureHostKey?: boolean | null;
 };
+
+const SSH_ERROR_PREFIX = "__SSH_ERROR__:";
+
+function normalizeFingerprint(value: string): string {
+  return value.replace(/^sha256:/i, "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
 
 // ── SSH helper ──────────────────────────────────────────────────────────
 
 function runSSH(
-  host: string,
-  port: number,
-  username: string,
-  password: string,
+  input: CollectInput,
   command: string
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const conn = new Client();
     let output = "";
     let done = false;
+    let observedHostKey: string | null = null;
+    const expectedHostKey = input.hostKeyFingerprint?.trim();
+    const allowInsecureHostKey =
+      input.allowInsecureHostKey === true ||
+      process.env.ALLOW_INSECURE_SSH_HOST_KEYS === "1";
 
     const timeout = setTimeout(() => {
       if (done) return;
@@ -96,17 +106,42 @@ function runSSH(
         if (done) return;
         done = true;
         try { conn.end(); } catch {}
+        if (observedHostKey) {
+          return reject(new Error(`HOST_KEY_UNVERIFIED:${observedHostKey}`));
+        }
         reject(e);
       })
-      .connect({ host, port, username, password, readyTimeout: 15000, tryKeyboard: false });
+      .connect({
+        host: input.host,
+        port: input.port,
+        username: input.username,
+        password: input.password,
+        readyTimeout: 15000,
+        tryKeyboard: false,
+        hostHash: "sha256",
+        hostVerifier: (hashedKey) => {
+          observedHostKey = hashedKey;
+          if (expectedHostKey) {
+            return normalizeFingerprint(hashedKey) === normalizeFingerprint(expectedHostKey);
+          }
+          return allowInsecureHostKey;
+        },
+      });
   });
 }
 
 // Convenience: run a command, return "" on any failure
 async function ssh(input: CollectInput, cmd: string): Promise<string> {
   try {
-    return await runSSH(input.host, input.port, input.username, input.password, cmd);
-  } catch {
+    return await runSSH(input, cmd);
+  } catch (e: any) {
+    const msg = e?.message || "";
+    if (msg.startsWith("HOST_KEY_UNVERIFIED")) {
+      return `${SSH_ERROR_PREFIX}${msg}`;
+    }
+    if (msg.toLowerCase().includes("authentication")) {
+      return `${SSH_ERROR_PREFIX}AUTH_FAILED`;
+    }
     return "";
   }
 }
@@ -411,6 +446,15 @@ export async function collectProxmoxHealth(input: CollectInput): Promise<Proxmox
         ssh(input, "command -v storcli64 2>/dev/null || command -v storcli 2>/dev/null || true"),
         ssh(input, "command -v megacli 2>/dev/null || command -v MegaCli64 2>/dev/null || true"),
       ]);
+
+    if (hostname.startsWith(SSH_ERROR_PREFIX)) {
+      return {
+        overall_status: "UNKNOWN",
+        storage_type: "UNKNOWN",
+        components: { smart: { status: "UNKNOWN", disks: [], disks_total: 0, disks_warning: 0, disks_failed: 0 }, meta: { hostname: "" } },
+        monitoring_error: hostname.slice(SSH_ERROR_PREFIX.length),
+      };
+    }
 
     if (!hostname) {
       return {
