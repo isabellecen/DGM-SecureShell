@@ -412,8 +412,8 @@ function PoolsArraysTab({ payload }: { payload: HealthPayload | null }) {
 function HistoryTab({ hostId }: { hostId: number }) {
   const { data: checks, isLoading } = useQuery<ProxmoxCheck[]>({
     queryKey: ["/api/proxmox-hosts", hostId, "checks"],
-    queryFn: async () => {
-      const res = await fetch(`/api/proxmox-hosts/${hostId}/checks?limit=20`);
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`/api/proxmox-hosts/${hostId}/checks?limit=20`, { signal });
       if (!res.ok) throw new Error("Failed to load checks");
       return res.json();
     },
@@ -491,8 +491,8 @@ export default function ProxmoxDetail({ params }: { params: { id: string } }) {
 
   const { data: host, isLoading } = useQuery<ProxmoxHostWithCustomer>({
     queryKey: ["/api/proxmox-hosts", hostId],
-    queryFn: async () => {
-      const res = await fetch(`/api/proxmox-hosts/${hostId}`);
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`/api/proxmox-hosts/${hostId}`, { signal });
       if (!res.ok) throw new Error("Host not found");
       return res.json();
     },

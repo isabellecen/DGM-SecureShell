@@ -62,8 +62,8 @@ export default App;
 function AuthGate() {
   const { data, isLoading } = useQuery<{ user: { username: string } } | null>({
     queryKey: ["/api/auth/me"],
-    queryFn: async () => {
-      const res = await fetch("/api/auth/me", { credentials: "include" });
+    queryFn: async ({ signal }) => {
+      const res = await fetch("/api/auth/me", { credentials: "include", signal });
       if (res.status === 401) {
         return null;
       }
@@ -88,12 +88,22 @@ function AuthGate() {
 
 function AuthenticatedShell() {
   const logoutMutation = useMutation({
+    onMutate: async () => {
+      await queryClient.cancelQueries({
+        predicate: (query) => query.queryKey[0] !== "/api/auth/me",
+      });
+    },
     mutationFn: async () => {
       return apiRequest("POST", "/api/auth/logout");
     },
-    onSettled: () => {
-      queryClient.clear();
+    onSuccess: async () => {
+      await queryClient.cancelQueries({
+        predicate: (query) => query.queryKey[0] !== "/api/auth/me",
+      });
       queryClient.setQueryData(["/api/auth/me"], null);
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey[0] !== "/api/auth/me",
+      });
     },
   });
 
@@ -110,6 +120,7 @@ function AuthenticatedShell() {
                 size="icon"
                 variant="ghost"
                 onClick={() => logoutMutation.mutate()}
+                disabled={logoutMutation.isPending}
                 data-testid="button-logout"
               >
                 <LogOut className="h-4 w-4" />
