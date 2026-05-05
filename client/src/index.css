@@ -196,6 +196,13 @@
  * need to be distinguished from eachother visually.
  */
 @layer utilities {
+  .border-button-outline {
+    border-color: var(--button-outline);
+  }
+
+  .border-badge-outline {
+    border-color: var(--badge-outline);
+  }
 
   /* Hide ugly search cancel button in Chrome until we can style it properly */
   input[type="search"]::-webkit-search-cancel-button {
