@@ -1,4 +1,7 @@
 import type { Express, NextFunction, Request, Response } from "express";
+import { sql } from "drizzle-orm";
+import { db } from "./db";
+import { rateLimitHits } from "@shared/schema";
 
 type RateLimitOptions = {
   windowMs: number;
@@ -13,27 +16,67 @@ function clientKey(req: Request, prefix: string): string {
 }
 
 function createRateLimit({ windowMs, max, keyPrefix }: RateLimitOptions) {
-  const hits = new Map<string, { count: number; resetAt: number }>();
-
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     const now = Date.now();
+    const nowDate = new Date(now);
     const key = clientKey(req, keyPrefix);
-    const current = hits.get(key);
+    const nextResetAt = new Date(now + windowMs);
 
-    if (!current || current.resetAt <= now) {
-      hits.set(key, { count: 1, resetAt: now + windowMs });
-      return next();
-    }
+    try {
+      const [hit] = await db
+        .insert(rateLimitHits)
+        .values({ key, count: 1, resetAt: nextResetAt, updatedAt: nowDate })
+        .onConflictDoUpdate({
+          target: rateLimitHits.key,
+          set: {
+            count: sql`
+              CASE
+                WHEN ${rateLimitHits.resetAt} <= ${nowDate} THEN 1
+                ELSE ${rateLimitHits.count} + 1
+              END
+            `,
+            resetAt: sql`
+              CASE
+                WHEN ${rateLimitHits.resetAt} <= ${nowDate} THEN ${nextResetAt}
+                ELSE ${rateLimitHits.resetAt}
+              END
+            `,
+            updatedAt: nowDate,
+          },
+        })
+        .returning();
 
-    current.count += 1;
-    if (current.count > max) {
-      const retryAfterSeconds = Math.ceil((current.resetAt - now) / 1000);
-      res.setHeader("Retry-After", retryAfterSeconds.toString());
-      return res.status(429).json({ message: "Too many attempts. Try again shortly." });
+      if (hit.count > max) {
+        const retryAfterSeconds = Math.max(1, Math.ceil((hit.resetAt.getTime() - now) / 1000));
+        res.setHeader("Retry-After", retryAfterSeconds.toString());
+        return res.status(429).json({ message: "Too many attempts. Try again shortly." });
+      }
+    } catch (err) {
+      if (process.env.NODE_ENV === "production") {
+        return next(err);
+      }
+      console.warn("Login rate limit unavailable:", err);
     }
 
     return next();
   };
+}
+
+export function enforceInsecureTargetPolicy() {
+  if (process.env.NODE_ENV !== "production") {
+    return;
+  }
+  if (process.env.ALLOW_PRODUCTION_INSECURE_TARGETS === "1") {
+    return;
+  }
+  if (
+    process.env.ALLOW_INSECURE_TARGET_TLS === "1" ||
+    process.env.ALLOW_INSECURE_SSH_HOST_KEYS === "1"
+  ) {
+    throw new Error(
+      "Production cannot enable insecure target TLS or SSH host-key bypasses unless ALLOW_PRODUCTION_INSECURE_TARGETS=1 is also set.",
+    );
+  }
 }
 
 function sameOrigin(req: Request, originHeader: string): boolean {

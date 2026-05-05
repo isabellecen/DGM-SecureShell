@@ -14,7 +14,10 @@
     "check": "tsc",
     "test": "node --import ./script/register-ts-loader.mjs script/run-tests.ts",
     "verify": "npm run check && npm run test",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "admin:hash-password": "node script/hash-password.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

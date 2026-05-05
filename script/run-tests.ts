@@ -16,8 +16,8 @@ async function findTests(dir: string): Promise<string[]> {
   return results.flat();
 }
 
-const root = path.resolve("server");
-const tests = await findTests(root);
+const roots = [path.resolve("server"), path.resolve("client", "src")];
+const tests = (await Promise.all(roots.map((root) => findTests(root)))).flat();
 
 for (const testFile of tests) {
   await import(pathToFileURL(testFile).href);

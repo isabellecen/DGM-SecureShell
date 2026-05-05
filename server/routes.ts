@@ -102,8 +102,30 @@ const settingSchema = z.object({
   value: z.string().default(""),
 }).strict();
 
+const retentionRunSchema = z.object({
+  retentionDays: z.coerce.number().int().min(1).max(3650).optional(),
+}).strict();
+
 function parseId(value: unknown) {
   return idParamSchema.parse(value);
+}
+
+function badRequest(message: string): Error & { status: number } {
+  const err = new Error(message) as Error & { status: number };
+  err.status = 400;
+  return err;
+}
+
+function assertInsecureTargetAllowed(kind: "SSH host key" | "target TLS", allowInsecure?: boolean) {
+  if (
+    process.env.NODE_ENV === "production" &&
+    process.env.ALLOW_PRODUCTION_INSECURE_TARGETS !== "1" &&
+    allowInsecure === true
+  ) {
+    throw badRequest(
+      `${kind} bypasses are disabled in production. Add a fingerprint or set ALLOW_PRODUCTION_INSECURE_TARGETS=1 intentionally.`,
+    );
+  }
 }
 
 export async function registerRoutes(
@@ -193,6 +215,7 @@ export async function registerRoutes(
 
   app.post("/api/proxmox-hosts", async (req, res) => {
     const data = proxmoxHostCreateSchema.parse(req.body);
+    assertInsecureTargetAllowed("SSH host key", data.allowInsecureHostKey);
     const result = await storage.createProxmoxHost({
       ...data,
       customerId: data.customerId ?? null,
@@ -207,6 +230,7 @@ export async function registerRoutes(
     if (!existing) return res.status(404).json({ message: "Not found" });
 
     const updateData = proxmoxHostPatchSchema.parse(req.body);
+    assertInsecureTargetAllowed("SSH host key", updateData.allowInsecureHostKey);
 
     const result = await storage.updateProxmoxHost(id, updateData);
     if (!result) return res.status(404).json({ message: "Not found" });
@@ -257,6 +281,7 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
 
   app.post("/api/backup-targets", async (req, res) => {
     const data = backupTargetCreateSchema.parse(req.body);
+    assertInsecureTargetAllowed("target TLS", data.allowInsecureTls);
     const result = await storage.createBackupTarget({
       ...data,
       port: data.port || (data.type === "PBS" ? 8007 : 443),
@@ -271,6 +296,7 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
     const existing = await storage.getBackupTarget(id);
     if (!existing) return res.status(404).json({ message: "Not found" });
     const updateData = backupTargetPatchSchema.parse(req.body);
+    assertInsecureTargetAllowed("target TLS", updateData.allowInsecureTls);
     const result = await storage.updateBackupTarget(id, updateData);
     if (!result) return res.status(404).json({ message: "Not found" });
     res.json({ ...result, password: "***" });
@@ -420,6 +446,27 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
     res.json(result);
   });
 
+  // Operations
+  app.get("/api/scheduler/status", async (_req, res) => {
+    const result = await storage.getSchedulerRuns();
+    res.json(result);
+  });
+
+  app.get("/api/audit-logs", async (req, res) => {
+    const limit = req.query.limit ? z.coerce.number().int().min(1).max(200).parse(req.query.limit) : 50;
+    const result = await storage.getAuditLogs(limit);
+    res.json(result);
+  });
+
+  app.post("/api/maintenance/retention/run", async (req, res) => {
+    const { retentionDays } = retentionRunSchema.parse(req.body || {});
+    const configuredDays = retentionDays
+      ?? Number((await storage.getSettingValue("RETENTION_DAYS")) || process.env.RETENTION_DAYS || 90);
+    const safeDays = Number.isInteger(configuredDays) && configuredDays > 0 ? configuredDays : 90;
+    const result = await storage.purgeOldData(safeDays);
+    res.json(result);
+  });
+
   // Notification Routes
   app.get("/api/notification-routes", async (_req, res) => {
     const result = await storage.getNotificationRoutes();
@@ -430,16 +477,16 @@ app.post("/api/proxmox-hosts/:id/run-check", async (req, res) => {
     const { scopeType, scopeId, eventType, severityMin, recipientsJson } = z.object({
       scopeType: z.enum(["GLOBAL", "CUSTOMER", "JOB"]).default("GLOBAL"),
       scopeId: nullableIdSchema.optional(),
-      eventType: z.string().trim().min(1),
+      eventType: z.enum(["FAIL", "MISSING", "WARN", "DAILY_REPORT", "MONITOR_DOWN"]),
       severityMin: z.enum(["INFO", "WARN", "CRIT"]).default("WARN"),
-      recipientsJson: z.unknown().nullable().optional(),
+      recipientsJson: z.array(idParamSchema).default([]),
     }).strict().parse(req.body);
     const result = await storage.createNotificationRoute({
       scopeType,
       scopeId: scopeId ?? null,
       eventType,
       severityMin,
-      recipientsJson: recipientsJson || null,
+      recipientsJson: recipientsJson.length > 0 ? recipientsJson : null,
     });
     res.status(201).json(result);
   });

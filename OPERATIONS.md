@@ -216,9 +216,12 @@ sudo systemctl enable --now protectiveshell
 | `npm run build` | Builds the React frontend into `dist/public` and bundles the server into `dist/index.cjs`. |
 | `npm start` | Starts the production server from `dist/index.cjs`. |
 | `npm run check` | Runs TypeScript type checking. |
-| `npm test` | Runs focused server tests. |
+| `npm test` | Runs focused server and client regression tests. |
 | `npm run verify` | Runs type checking and tests. |
 | `npm run db:push` | Applies the Drizzle schema to the configured PostgreSQL database. |
+| `npm run db:generate` | Generates tracked Drizzle migration files. |
+| `npm run db:migrate` | Applies tracked Drizzle migrations. |
+| `npm run admin:hash-password -- "password"` | Generates an `ADMIN_PASSWORD_HASH` value. |
 
 On native Windows PowerShell, use `npm.cmd` if script execution policy blocks `npm.ps1`:
 
@@ -316,8 +319,9 @@ Use the Settings page `Test` button on the SMTP tab to validate connection and a
 
 | Variable | Default | Required | Restart needed | Description |
 | --- | --- | --- | --- | --- |
-| `ALLOW_INSECURE_TARGET_TLS` | `0` | No | Yes | Global escape hatch allowing self-signed or unverified HTTPS target certificates. Prefer per-target TLS fingerprints. |
-| `ALLOW_INSECURE_SSH_HOST_KEYS` | `0` | No | Yes | Global escape hatch allowing unknown SSH host keys. Prefer per-host SSH fingerprints. |
+| `ALLOW_INSECURE_TARGET_TLS` | `0` | No | Yes | Global escape hatch allowing self-signed or unverified HTTPS target certificates. Prefer per-target TLS fingerprints. Production also requires `ALLOW_PRODUCTION_INSECURE_TARGETS=1`. |
+| `ALLOW_INSECURE_SSH_HOST_KEYS` | `0` | No | Yes | Global escape hatch allowing unknown SSH host keys. Prefer per-host SSH fingerprints. Production also requires `ALLOW_PRODUCTION_INSECURE_TARGETS=1`. |
+| `ALLOW_PRODUCTION_INSECURE_TARGETS` | `0` | No | Yes | Explicit production override required before insecure target TLS or SSH bypasses are accepted. |
 
 Use these only in isolated development or while enrolling fingerprints. For production, pin fingerprints per target or host.
 
@@ -341,7 +345,7 @@ The Settings page writes to the `app_settings` table. Secret values are encrypte
 | `IMAP_FOLDER` | Yes | IMAP folder, default `INBOX`. API/env only unless added manually. |
 | `IMAP_TLS` | Yes | `1` for TLS, `0` for plaintext. API/env only unless added manually. |
 | `IMAP_FETCH_LIMIT` | Yes | Maximum messages per IMAP poll. API/env only unless added manually. |
-| `IMAP_POLL_INTERVAL` | Reserved | Displayed in UI but not currently used by the scheduler. Use environment `IMAP_POLL_INTERVAL_MINUTES`. |
+| `IMAP_POLL_INTERVAL` | Yes | IMAP polling interval in minutes. Loaded when the scheduler starts. Environment `IMAP_POLL_INTERVAL_MINUTES` remains the fallback. |
 | `SMTP_HOST` | Yes | SMTP hostname. |
 | `SMTP_PORT` | Yes | SMTP port. |
 | `SMTP_USER` | Yes | SMTP username. |
@@ -349,9 +353,9 @@ The Settings page writes to the `app_settings` table. Secret values are encrypte
 | `SMTP_FROM` | Yes | Notification sender address. |
 | `SMTP_STARTTLS` | Yes | `1` enables STARTTLS on non-465 ports. API/env only unless added manually. |
 | `CONSECUTIVE_FAILURE_THRESHOLD` | Yes | Number of failed Proxmox checks before an unreachable incident is opened. Defaults to `3`. |
-| `RETENTION_DAYS` | Reserved | Stored by the UI; no retention worker currently deletes old emails/checks. |
-| `SSH_TIMEOUT` | Reserved | Stored by the UI; the SSH collector currently uses built-in timeouts. |
-| `DAILY_REPORT_TIME` | Reserved | Stored by the UI; no daily report worker currently sends summaries. |
+| `RETENTION_DAYS` | Yes | Retention worker deletes old emails, events, expected runs, Proxmox checks, and non-open incidents after this many days. Defaults to `90`. |
+| `SSH_TIMEOUT` | Yes | SSH collector timeout in seconds. Defaults to `20`. |
+| `DAILY_REPORT_TIME` | Yes | Sends a daily operational summary at this local `HH:MM` time when SMTP and recipients are configured. |
 
 ## Admin Authentication
 
@@ -389,6 +393,8 @@ All workers run inside the main Node process unless `DISABLE_SCHEDULER=1`.
 | Expected-run producer | fixed `15` minutes | Creates pending expected runs for enabled jobs. |
 | Expected-run deadline evaluator | fixed `1` minute | Marks overdue pending runs as `MISSING` and opens deduplicated critical incidents. |
 | Notification sender | fixed `5` minutes | Sends SMTP notifications for open incidents that have not been notified. |
+| Retention cleanup | fixed `24` hours | Deletes old operational records according to `RETENTION_DAYS`. |
+| Daily report | fixed `1` minute due check | Sends the daily report when local time matches `DAILY_REPORT_TIME`. |
 
 Worker executions skip overlapping runs. If one poll is still running when the next interval fires, the next run is skipped.
 
@@ -547,19 +553,26 @@ Notification route fields:
 
 ## Data Retention
 
-The UI includes `RETENTION_DAYS`, but there is no active retention worker yet. Until that worker exists, old emails, expected runs, Proxmox checks, and incidents remain in PostgreSQL.
+The retention worker uses `RETENTION_DAYS`, defaulting to `90` if neither the database setting nor environment variable is set. It removes old events, emails, completed expected runs, Proxmox checks, and non-open incidents. Open incidents are preserved regardless of age.
 
-Plan database storage accordingly and archive manually if needed.
+The Settings Operations tab also includes a manual retention run button.
 
 ## Applying Schema Changes
 
-Use:
+For development or small deployments, use:
 
 ```powershell
 npm.cmd run db:push
 ```
 
 This applies the Drizzle schema in `shared/schema.ts` directly to the configured database.
+
+For production, prefer tracked migrations:
+
+```powershell
+npm.cmd run db:generate
+npm.cmd run db:migrate
+```
 
 Production recommendations:
 

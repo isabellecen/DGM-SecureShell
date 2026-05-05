@@ -278,3 +278,50 @@ export const appSettings = pgTable("app_settings", {
 export const insertAppSettingSchema = createInsertSchema(appSettings).omit({ id: true, updatedAt: true });
 export type InsertAppSetting = z.infer<typeof insertAppSettingSchema>;
 export type AppSetting = typeof appSettings.$inferSelect;
+
+export const schedulerRuns = pgTable("scheduler_runs", {
+  id: serial("id").primaryKey(),
+  workerName: text("worker_name").notNull().unique(),
+  status: text("status").notNull().default("UNKNOWN"),
+  lastStartedAt: timestamp("last_started_at", { withTimezone: true }),
+  lastFinishedAt: timestamp("last_finished_at", { withTimezone: true }),
+  durationMs: integer("duration_ms"),
+  message: text("message"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  check("scheduler_runs_status_check", sql`${table.status} IN ('UNKNOWN', 'RUNNING', 'OK', 'ERROR', 'SKIPPED')`),
+  index("scheduler_runs_status_idx").on(table.status),
+]);
+
+export const insertSchedulerRunSchema = createInsertSchema(schedulerRuns).omit({ id: true, updatedAt: true });
+export type InsertSchedulerRun = z.infer<typeof insertSchedulerRunSchema>;
+export type SchedulerRun = typeof schedulerRuns.$inferSelect;
+
+export const auditLogs = pgTable("audit_logs", {
+  id: serial("id").primaryKey(),
+  actor: text("actor").notNull().default("system"),
+  action: text("action").notNull(),
+  entityType: text("entity_type").notNull(),
+  entityId: text("entity_id"),
+  summary: text("summary").notNull(),
+  metadataJson: jsonb("metadata_json"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("audit_logs_created_at_idx").on(table.createdAt),
+  index("audit_logs_entity_idx").on(table.entityType, table.entityId),
+]);
+
+export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true, createdAt: true });
+export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
+export type AuditLog = typeof auditLogs.$inferSelect;
+
+export const rateLimitHits = pgTable("rate_limit_hits", {
+  key: text("key").primaryKey(),
+  count: integer("count").notNull().default(0),
+  resetAt: timestamp("reset_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const insertRateLimitHitSchema = createInsertSchema(rateLimitHits);
+export type InsertRateLimitHit = z.infer<typeof insertRateLimitHitSchema>;
+export type RateLimitHit = typeof rateLimitHits.$inferSelect;

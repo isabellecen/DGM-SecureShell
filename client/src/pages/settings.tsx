@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -35,13 +37,24 @@ import {
   Plus,
   Trash2,
   Pencil,
-  Clock,
   Settings as SettingsIcon,
+  Route as RouteIcon,
+  Activity,
+  History,
+  RefreshCw,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { AppSetting, Recipient, Customer } from "@shared/schema";
+import type {
+  AppSetting,
+  AuditLog,
+  Customer,
+  Job,
+  NotificationRoute,
+  Recipient,
+  SchedulerRun,
+} from "@shared/schema";
 
 function SettingField({
   label,
@@ -87,6 +100,209 @@ function SettingField({
       </div>
       <p className="text-xs text-muted-foreground">{description}</p>
     </div>
+  );
+}
+
+function formatDate(value?: string | Date | null) {
+  if (!value) return "-";
+  return new Date(value).toLocaleString();
+}
+
+function routeRecipientIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => Number(entry))
+    .filter((entry) => Number.isInteger(entry) && entry > 0);
+}
+
+function routeRecipientsLabel(route: NotificationRoute, recipients: Recipient[]) {
+  const ids = new Set(routeRecipientIds(route.recipientsJson));
+  if (ids.size === 0) return "Default routing";
+  const names = recipients
+    .filter((recipient) => ids.has(recipient.id))
+    .map((recipient) => recipient.name);
+  return names.length > 0 ? names.join(", ") : `${ids.size} recipient(s)`;
+}
+
+function scopeLabel(route: NotificationRoute, customers: Customer[], jobs: Job[]) {
+  if (route.scopeType === "GLOBAL") return "Global";
+  if (route.scopeType === "CUSTOMER") {
+    return customers.find((customer) => customer.id === route.scopeId)?.name || `Customer #${route.scopeId}`;
+  }
+  if (route.scopeType === "JOB") {
+    return jobs.find((job) => job.id === route.scopeId)?.name || `Job #${route.scopeId}`;
+  }
+  return route.scopeType;
+}
+
+function NotificationRouteDialog({
+  customers,
+  jobs,
+  recipients,
+  open,
+  onOpenChange,
+}: {
+  customers: Customer[];
+  jobs: Job[];
+  recipients: Recipient[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const [scopeType, setScopeType] = useState("GLOBAL");
+  const [scopeId, setScopeId] = useState("none");
+  const [eventType, setEventType] = useState("FAIL");
+  const [severityMin, setSeverityMin] = useState("WARN");
+  const [recipientIds, setRecipientIds] = useState<number[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    setScopeType("GLOBAL");
+    setScopeId("none");
+    setEventType("FAIL");
+    setSeverityMin("WARN");
+    setRecipientIds([]);
+  }, [open]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      return apiRequest("POST", "/api/notification-routes", {
+        scopeType,
+        scopeId: scopeType === "GLOBAL" || scopeId === "none" ? null : Number(scopeId),
+        eventType,
+        severityMin,
+        recipientsJson: recipientIds,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/notification-routes"] });
+      toast({ title: "Route added" });
+      onOpenChange(false);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>New Notification Route</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label>Scope</Label>
+              <Select
+                value={scopeType}
+                onValueChange={(value) => {
+                  setScopeType(value);
+                  setScopeId("none");
+                }}
+              >
+                <SelectTrigger data-testid="select-route-scope">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="GLOBAL">Global</SelectItem>
+                  <SelectItem value="CUSTOMER">Customer</SelectItem>
+                  <SelectItem value="JOB">Job</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {scopeType !== "GLOBAL" && (
+              <div>
+                <Label>{scopeType === "CUSTOMER" ? "Customer" : "Job"}</Label>
+                <Select value={scopeId} onValueChange={setScopeId}>
+                  <SelectTrigger data-testid="select-route-scope-id">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Choose...</SelectItem>
+                    {(scopeType === "CUSTOMER" ? customers : jobs).map((item) => (
+                      <SelectItem key={item.id} value={item.id.toString()}>
+                        {item.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label>Event</Label>
+              <Select value={eventType} onValueChange={setEventType}>
+                <SelectTrigger data-testid="select-route-event">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="FAIL">Failure</SelectItem>
+                  <SelectItem value="MISSING">Missing Backup</SelectItem>
+                  <SelectItem value="WARN">Warning</SelectItem>
+                  <SelectItem value="MONITOR_DOWN">Monitor Down</SelectItem>
+                  <SelectItem value="DAILY_REPORT">Daily Report</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Minimum Severity</Label>
+              <Select value={severityMin} onValueChange={setSeverityMin}>
+                <SelectTrigger data-testid="select-route-severity">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="INFO">Info</SelectItem>
+                  <SelectItem value="WARN">Warning</SelectItem>
+                  <SelectItem value="CRIT">Critical</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Recipients</Label>
+            <div className="max-h-48 overflow-auto rounded-md border p-2">
+              {recipients.length === 0 ? (
+                <p className="px-1 py-2 text-sm text-muted-foreground">No recipients configured</p>
+              ) : (
+                recipients.map((recipient) => (
+                  <label key={recipient.id} className="flex items-center gap-2 rounded-sm px-1 py-1.5 text-sm">
+                    <Checkbox
+                      checked={recipientIds.includes(recipient.id)}
+                      onCheckedChange={(checked) => {
+                        setRecipientIds((current) =>
+                          checked
+                            ? [...current, recipient.id]
+                            : current.filter((id) => id !== recipient.id),
+                        );
+                      }}
+                    />
+                    <span>{recipient.name}</span>
+                    <span className="text-muted-foreground">{recipient.email}</span>
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
+
+          <Button
+            className="w-full"
+            onClick={() => mutation.mutate()}
+            disabled={
+              mutation.isPending ||
+              recipientIds.length === 0 ||
+              (scopeType !== "GLOBAL" && scopeId === "none")
+            }
+            data-testid="button-save-notification-route"
+          >
+            {mutation.isPending ? "Saving..." : "Add Route"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -216,6 +432,7 @@ export default function Settings() {
   const { toast } = useToast();
   const [recipientDialogOpen, setRecipientDialogOpen] = useState(false);
   const [editingRecipient, setEditingRecipient] = useState<Recipient | undefined>();
+  const [routeDialogOpen, setRouteDialogOpen] = useState(false);
 
   const { data: settingsData, isLoading: settingsLoading } = useQuery<AppSetting[]>({
     queryKey: ["/api/settings"],
@@ -227,6 +444,24 @@ export default function Settings() {
 
   const { data: customers } = useQuery<Customer[]>({
     queryKey: ["/api/customers"],
+  });
+
+  const { data: jobs } = useQuery<Job[]>({
+    queryKey: ["/api/jobs"],
+  });
+
+  const { data: notificationRoutes, isLoading: routesLoading } = useQuery<NotificationRoute[]>({
+    queryKey: ["/api/notification-routes"],
+  });
+
+  const { data: schedulerRuns, isLoading: schedulerLoading } = useQuery<SchedulerRun[]>({
+    queryKey: ["/api/scheduler/status"],
+    refetchInterval: 30_000,
+  });
+
+  const { data: auditLogs, isLoading: auditLoading } = useQuery<AuditLog[]>({
+    queryKey: ["/api/audit-logs"],
+    refetchInterval: 60_000,
   });
 
   const settings: Record<string, string> = {};
@@ -276,6 +511,43 @@ export default function Settings() {
     },
   });
 
+  const deleteRouteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      return apiRequest("DELETE", `/api/notification-routes/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/notification-routes"] });
+      toast({ title: "Route removed" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const runRetentionMutation = useMutation({
+    mutationFn: async () => {
+      return apiRequest("POST", "/api/maintenance/retention/run", {
+        retentionDays: Number(settings.RETENTION_DAYS || 90),
+      }).then((res) => res.json());
+    },
+    onSuccess: (summary: {
+      deletedEvents: number;
+      deletedExpectedRuns: number;
+      deletedEmails: number;
+      deletedProxmoxChecks: number;
+      deletedIncidents: number;
+    }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/scheduler/status"] });
+      toast({
+        title: "Retention completed",
+        description: `${summary.deletedEmails} emails, ${summary.deletedProxmoxChecks} checks, ${summary.deletedIncidents} incidents removed`,
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Retention failed", description: err.message, variant: "destructive" });
+    },
+  });
+
   const handleSaveSetting = (key: string, value: string) => {
     saveMutation.mutate({ key, value });
   };
@@ -300,12 +572,12 @@ export default function Settings() {
           Settings
         </h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Configure IMAP polling, SMTP notifications, and alert recipients
+          Configure polling, notifications, maintenance, and operational controls
         </p>
       </div>
 
       <Tabs defaultValue="imap">
-        <TabsList className="mb-4">
+        <TabsList className="mb-4 flex h-auto flex-wrap">
           <TabsTrigger value="imap" data-testid="tab-imap">
             <Mail className="h-3.5 w-3.5 mr-1.5" />
             IMAP
@@ -318,9 +590,21 @@ export default function Settings() {
             <Bell className="h-3.5 w-3.5 mr-1.5" />
             Recipients
           </TabsTrigger>
+          <TabsTrigger value="routes" data-testid="tab-routes">
+            <RouteIcon className="h-3.5 w-3.5 mr-1.5" />
+            Routes
+          </TabsTrigger>
           <TabsTrigger value="general" data-testid="tab-general">
             <SettingsIcon className="h-3.5 w-3.5 mr-1.5" />
             General
+          </TabsTrigger>
+          <TabsTrigger value="operations" data-testid="tab-operations">
+            <Activity className="h-3.5 w-3.5 mr-1.5" />
+            Operations
+          </TabsTrigger>
+          <TabsTrigger value="audit" data-testid="tab-audit">
+            <History className="h-3.5 w-3.5 mr-1.5" />
+            Audit
           </TabsTrigger>
         </TabsList>
 
@@ -530,6 +814,81 @@ export default function Settings() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="routes">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-1 space-y-0">
+              <CardTitle className="text-base">Notification Routes</CardTitle>
+              <Button
+                size="sm"
+                onClick={() => setRouteDialogOpen(true)}
+                data-testid="button-add-notification-route"
+              >
+                <Plus className="h-3.5 w-3.5 mr-1" />
+                Add
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {routesLoading ? (
+                <Skeleton className="h-24 w-full" />
+              ) : !notificationRoutes || notificationRoutes.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <RouteIcon className="h-8 w-8 text-muted-foreground mb-2" />
+                  <p className="text-sm text-muted-foreground">No custom routes configured</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Default routing sends alerts to global and matching customer recipients
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Scope</TableHead>
+                        <TableHead>Event</TableHead>
+                        <TableHead>Minimum</TableHead>
+                        <TableHead>Recipients</TableHead>
+                        <TableHead className="w-20">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {notificationRoutes.map((route) => (
+                        <TableRow key={route.id} data-testid={`row-notification-route-${route.id}`}>
+                          <TableCell className="font-medium">
+                            {scopeLabel(route, customers || [], jobs || [])}
+                          </TableCell>
+                          <TableCell>{route.eventType}</TableCell>
+                          <TableCell>
+                            <Badge variant={route.severityMin === "CRIT" ? "destructive" : "secondary"}>
+                              {route.severityMin}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {routeRecipientsLabel(route, recipients || [])}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              onClick={() => {
+                                if (window.confirm("Remove this notification route?")) {
+                                  deleteRouteMutation.mutate(route.id);
+                                }
+                              }}
+                              data-testid={`button-delete-notification-route-${route.id}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="general">
           <Card>
             <CardHeader>
@@ -545,7 +904,7 @@ export default function Settings() {
               />
               <SettingField
                 label="Retention Days"
-                description="Delete processed IMAP emails older than this many days (default: 7)"
+                description="Delete old emails, checks, expected runs, and resolved incidents after this many days (default: 90)"
                 settingKey="RETENTION_DAYS"
                 type="number"
                 settings={settings}
@@ -553,7 +912,7 @@ export default function Settings() {
               />
               <SettingField
                 label="SSH Timeout (seconds)"
-                description="Maximum time to wait for SSH health checks (default: 10)"
+                description="Maximum time to wait for SSH health checks (default: 20)"
                 settingKey="SSH_TIMEOUT"
                 type="number"
                 settings={settings}
@@ -577,6 +936,142 @@ export default function Settings() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="operations">
+          <div className="space-y-4">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+                <CardTitle className="text-base">Scheduler Status</CardTitle>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => queryClient.invalidateQueries({ queryKey: ["/api/scheduler/status"] })}
+                  data-testid="button-refresh-scheduler"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {schedulerLoading ? (
+                  <Skeleton className="h-24 w-full" />
+                ) : !schedulerRuns || schedulerRuns.length === 0 ? (
+                  <p className="py-6 text-center text-sm text-muted-foreground">
+                    No scheduler runs recorded yet
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Worker</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Started</TableHead>
+                          <TableHead>Finished</TableHead>
+                          <TableHead>Duration</TableHead>
+                          <TableHead>Message</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {schedulerRuns.map((run) => (
+                          <TableRow key={run.id} data-testid={`row-scheduler-${run.workerName}`}>
+                            <TableCell className="font-medium">{run.workerName}</TableCell>
+                            <TableCell>
+                              <Badge
+                                variant={
+                                  run.status === "ERROR"
+                                    ? "destructive"
+                                    : run.status === "OK"
+                                      ? "secondary"
+                                      : "outline"
+                                }
+                              >
+                                {run.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-muted-foreground">{formatDate(run.lastStartedAt)}</TableCell>
+                            <TableCell className="text-muted-foreground">{formatDate(run.lastFinishedAt)}</TableCell>
+                            <TableCell className="text-muted-foreground">
+                              {run.durationMs == null ? "-" : `${run.durationMs}ms`}
+                            </TableCell>
+                            <TableCell className="max-w-sm truncate text-muted-foreground">
+                              {run.message || "-"}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+                <CardTitle className="text-base">Retention</CardTitle>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => runRetentionMutation.mutate()}
+                  disabled={runRetentionMutation.isPending}
+                  data-testid="button-run-retention"
+                >
+                  {runRetentionMutation.isPending ? "Running..." : "Run Now"}
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground">
+                  Current retention window: {settings.RETENTION_DAYS || "90"} days
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="audit">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Recent Audit Events</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {auditLoading ? (
+                <Skeleton className="h-24 w-full" />
+              ) : !auditLogs || auditLogs.length === 0 ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  No audit events recorded yet
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Time</TableHead>
+                        <TableHead>Actor</TableHead>
+                        <TableHead>Action</TableHead>
+                        <TableHead>Entity</TableHead>
+                        <TableHead>Summary</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {auditLogs.map((entry) => (
+                        <TableRow key={entry.id} data-testid={`row-audit-${entry.id}`}>
+                          <TableCell className="text-muted-foreground">{formatDate(entry.createdAt)}</TableCell>
+                          <TableCell>{entry.actor}</TableCell>
+                          <TableCell>{entry.action}</TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {entry.entityType}{entry.entityId ? ` #${entry.entityId}` : ""}
+                          </TableCell>
+                          <TableCell className="max-w-lg truncate text-muted-foreground">
+                            {entry.summary}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
 
       <RecipientDialog
@@ -585,6 +1080,13 @@ export default function Settings() {
         customers={customers || []}
         open={recipientDialogOpen}
         onOpenChange={setRecipientDialogOpen}
+      />
+      <NotificationRouteDialog
+        customers={customers || []}
+        jobs={jobs || []}
+        recipients={recipients || []}
+        open={routeDialogOpen}
+        onOpenChange={setRouteDialogOpen}
       />
     </div>
   );

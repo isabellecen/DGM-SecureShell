@@ -73,6 +73,77 @@ export async function testSmtpConnection() {
   client.close();
 }
 
+export async function sendDailyReportIfDue(now = new Date()) {
+  const reportTime = await setting("DAILY_REPORT_TIME");
+  if (!reportTime || !/^([01]\d|2[0-3]):[0-5]\d$/.test(reportTime)) {
+    return;
+  }
+
+  const timezone = (await setting("APP_TIMEZONE")) || "UTC";
+  const local = localDateTimeParts(now, timezone);
+  const localMinute = `${local.hour}:${local.minute}`;
+  if (localMinute !== reportTime) {
+    return;
+  }
+
+  const dateKey = `${local.year}-${local.month}-${local.day}`;
+  if ((await storage.getSettingValue("DAILY_REPORT_LAST_SENT_DATE")) === dateKey) {
+    return;
+  }
+
+  const smtp = await getSmtpSettings();
+  if (!smtp) {
+    return;
+  }
+
+  const allRecipients = await db.select().from(recipients).where(eq(recipients.enabled, true));
+  const routes = await db.select().from(notificationRoutes).where(eq(notificationRoutes.eventType, "DAILY_REPORT"));
+  const routeRecipients = routes.flatMap((route) => recipientsFromRoute(route.recipientsJson, allRecipients));
+  const dailyRecipients = routeRecipients.length > 0
+    ? uniqueRecipients(routeRecipients)
+    : allRecipients.filter((recipient) => recipient.customerId == null && recipient.type === "TECH");
+  const resolvedRecipients = dailyRecipients.length > 0
+    ? dailyRecipients
+    : allRecipients.filter((recipient) => recipient.type === "TECH");
+  if (resolvedRecipients.length === 0) {
+    return;
+  }
+
+  const stats = await storage.getDashboardStats();
+  const client = new SimpleSmtpClient(smtp);
+  await client.connect();
+  try {
+    await client.send({
+      to: resolvedRecipients.map((recipient) => recipient.email),
+      subject: `[ProtectiveShell] Daily report for ${dateKey}`,
+      body: [
+        `ProtectiveShell daily report for ${dateKey}`,
+        "",
+        `Enabled backup jobs: ${stats.enabledJobs}/${stats.totalJobs}`,
+        `Monitored Proxmox hosts: ${stats.totalHosts}`,
+        `Open incidents: ${stats.openIncidents}`,
+        "",
+        "Recent incidents:",
+        ...(
+          stats.recentIncidents.length > 0
+            ? stats.recentIncidents.map((incident) => `- ${incident.severity} ${incident.state}: ${incident.title}`)
+            : ["- None"]
+        ),
+        "",
+        "Recent expected runs:",
+        ...(
+          stats.recentRuns.length > 0
+            ? stats.recentRuns.map((run) => `- ${run.status}: ${run.jobName || `Job #${run.jobId}`} at ${run.scheduledFor.toISOString()}`)
+            : ["- None"]
+        ),
+      ].join("\n"),
+    });
+    await storage.upsertSetting("DAILY_REPORT_LAST_SENT_DATE", dateKey);
+  } finally {
+    client.close();
+  }
+}
+
 async function resolveRecipients(incident: Incident): Promise<Recipient[]> {
   const allRecipients = await db.select().from(recipients).where(eq(recipients.enabled, true));
   const routes = await db.select().from(notificationRoutes);
@@ -183,6 +254,27 @@ function eventTypeForIncident(incident: Incident): string {
 
 function severityValue(severity: string): number {
   return { INFO: 0, WARN: 1, CRIT: 2 }[severity] ?? 0;
+}
+
+function localDateTimeParts(date: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+
+  const get = (type: string) => parts.find((part) => part.type === type)?.value || "";
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    hour: get("hour"),
+    minute: get("minute"),
+  };
 }
 
 async function sendIncidentEmail(settings: SmtpSettings, incident: Incident, resolvedRecipients: Recipient[]) {

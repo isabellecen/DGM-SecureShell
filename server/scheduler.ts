@@ -1,6 +1,6 @@
 import { and, eq, lt } from "drizzle-orm";
 import { db } from "./db";
-import { expectedRuns, incidents, jobs } from "@shared/schema";
+import { expectedRuns, incidents, jobs, schedulerRuns } from "@shared/schema";
 import { pollImapInboxAndPersist } from "./emailPoller";
 import {
   listEnabledBackupTargetIds,
@@ -8,7 +8,7 @@ import {
   pollBackupTargetAndPersist,
   runProxmoxHostCheck,
 } from "./monitoring";
-import { notifyOpenIncidents } from "./notificationService";
+import { notifyOpenIncidents, sendDailyReportIfDue } from "./notificationService";
 import { storage } from "./storage";
 
 let started = false;
@@ -19,20 +19,95 @@ function intervalMs(envName: string, fallbackMinutes: number): number {
   return safeMinutes * 60 * 1000;
 }
 
+function positiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function intervalMsFromSetting(settingKey: string, envName: string, fallbackMinutes: number): Promise<number> {
+  const configured = (await storage.getSettingValue(settingKey)) || process.env[envName];
+  return positiveInteger(configured, fallbackMinutes) * 60 * 1000;
+}
+
+async function recordSchedulerStatus(
+  workerName: string,
+  status: "RUNNING" | "OK" | "ERROR" | "SKIPPED",
+  data: {
+    startedAt?: Date;
+    finishedAt?: Date | null;
+    durationMs?: number | null;
+    message?: string | null;
+  } = {},
+) {
+  const now = new Date();
+  const values = {
+    workerName,
+    status,
+    lastStartedAt: data.startedAt ?? null,
+    lastFinishedAt: data.finishedAt ?? null,
+    durationMs: data.durationMs ?? null,
+    message: data.message ?? null,
+    updatedAt: now,
+  };
+
+  await db
+    .insert(schedulerRuns)
+    .values(values)
+    .onConflictDoUpdate({
+      target: schedulerRuns.workerName,
+      set: values,
+    });
+}
+
+async function safeRecordSchedulerStatus(...args: Parameters<typeof recordSchedulerStatus>) {
+  try {
+    await recordSchedulerStatus(...args);
+  } catch (err) {
+    console.warn("Scheduler status update failed:", err);
+  }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function schedule(name: string, interval: number, task: () => Promise<void>) {
   let running = false;
+  let currentStartedAt: Date | undefined;
   const run = async () => {
     if (running) {
       console.warn(`${name} scheduler skipped because previous run is still active`);
+      await safeRecordSchedulerStatus(name, "SKIPPED", {
+        startedAt: currentStartedAt,
+        finishedAt: new Date(),
+        message: "Previous run is still active",
+      });
       return;
     }
     running = true;
+    const startedAt = new Date();
+    currentStartedAt = startedAt;
+    await safeRecordSchedulerStatus(name, "RUNNING", { startedAt });
     try {
       await task();
+      const finishedAt = new Date();
+      await safeRecordSchedulerStatus(name, "OK", {
+        startedAt,
+        finishedAt,
+        durationMs: finishedAt.getTime() - startedAt.getTime(),
+      });
     } catch (err) {
       console.error(`${name} scheduler failed:`, err);
+      const finishedAt = new Date();
+      await safeRecordSchedulerStatus(name, "ERROR", {
+        startedAt,
+        finishedAt,
+        durationMs: finishedAt.getTime() - startedAt.getTime(),
+        message: errorMessage(err).slice(0, 1000),
+      });
     } finally {
       running = false;
+      currentStartedAt = undefined;
     }
   };
 
@@ -59,10 +134,31 @@ export function startScheduler() {
     }
   });
 
-  schedule("imap", intervalMs("IMAP_POLL_INTERVAL_MINUTES", 60), pollImapInboxAndPersist);
+  void intervalMsFromSetting("IMAP_POLL_INTERVAL", "IMAP_POLL_INTERVAL_MINUTES", 60)
+    .catch((err) => {
+      console.warn("Unable to load IMAP poll interval, using default:", err);
+      return intervalMs("IMAP_POLL_INTERVAL_MINUTES", 60);
+    })
+    .then((imapInterval) => {
+      schedule("imap", imapInterval, pollImapInboxAndPersist);
+    });
   schedule("notifications", 5 * 60 * 1000, notifyOpenIncidents);
   schedule("expected-run-producer", 15 * 60 * 1000, produceExpectedRuns);
   schedule("expected-runs", 60 * 1000, evaluateExpectedRunDeadlines);
+  schedule("retention", 24 * 60 * 60 * 1000, applyRetentionPolicy);
+  schedule("daily-report", 60 * 1000, sendDailyReportIfDue);
+}
+
+export function retentionDaysFromValue(value: string | undefined, fallback = 90): number {
+  return positiveInteger(value, fallback);
+}
+
+export async function applyRetentionPolicy() {
+  const retentionDays = retentionDaysFromValue(
+    (await storage.getSettingValue("RETENTION_DAYS")) || process.env.RETENTION_DAYS,
+    90,
+  );
+  await storage.purgeOldData(retentionDays);
 }
 
 async function produceExpectedRuns() {

@@ -11,6 +11,7 @@ export async function runProxmoxHostCheck(hostId: number) {
     return undefined;
   }
 
+  const timeoutSeconds = await numericSetting("SSH_TIMEOUT", 20);
   const result = await collectProxmoxHealth({
     host: host.host,
     port: host.port,
@@ -18,6 +19,7 @@ export async function runProxmoxHostCheck(hostId: number) {
     password: host.password,
     hostKeyFingerprint: host.hostKeyFingerprint,
     allowInsecureHostKey: host.allowInsecureHostKey,
+    timeoutSeconds,
   });
 
   const checkedAt = new Date();

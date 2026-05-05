@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, sql, and, count } from "drizzle-orm";
+import { eq, desc, sql, and, count, lt, ne } from "drizzle-orm";
 import {
   customers, insertCustomerSchema, type Customer, type InsertCustomer,
   jobs, type Job, type InsertJob,
@@ -14,6 +14,9 @@ import {
   proxmoxChecks, type ProxmoxCheck, type InsertProxmoxCheck,
   backupTargets, type BackupTarget, type InsertBackupTarget,
   appSettings, type AppSetting, type InsertAppSetting,
+  schedulerRuns, type SchedulerRun,
+  auditLogs, type AuditLog, type InsertAuditLog,
+  rateLimitHits,
 } from "@shared/schema";
 import { decryptSecret, encryptSecret, isSecretSettingKey } from "./crypto";
 
@@ -81,6 +84,11 @@ export interface IStorage {
   createNotificationRoute(data: InsertNotificationRoute): Promise<NotificationRoute>;
   deleteNotificationRoute(id: number): Promise<void>;
 
+  getSchedulerRuns(): Promise<SchedulerRun[]>;
+  getAuditLogs(limit?: number): Promise<AuditLog[]>;
+  createAuditLog(data: InsertAuditLog): Promise<AuditLog>;
+  purgeOldData(retentionDays: number): Promise<RetentionSummary>;
+
   getDashboardStats(): Promise<{
     totalJobs: number;
     enabledJobs: number;
@@ -92,6 +100,15 @@ export interface IStorage {
     jobsBySystem: { systemType: string; count: number }[];
   }>;
 }
+
+export type RetentionSummary = {
+  cutoff: Date;
+  deletedEvents: number;
+  deletedExpectedRuns: number;
+  deletedEmails: number;
+  deletedProxmoxChecks: number;
+  deletedIncidents: number;
+};
 
 type ProxmoxHostUpdate = Partial<InsertProxmoxHost> & {
   lastCheckAt?: Date;
@@ -510,6 +527,71 @@ export class DatabaseStorage implements IStorage {
 
   async deleteNotificationRoute(id: number): Promise<void> {
     await db.delete(notificationRoutes).where(eq(notificationRoutes.id, id));
+  }
+
+  async getSchedulerRuns(): Promise<SchedulerRun[]> {
+    return db.select().from(schedulerRuns).orderBy(schedulerRuns.workerName);
+  }
+
+  async getAuditLogs(limit = 50): Promise<AuditLog[]> {
+    return db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(limit);
+  }
+
+  async createAuditLog(data: InsertAuditLog): Promise<AuditLog> {
+    const [result] = await db.insert(auditLogs).values(data).returning();
+    return result;
+  }
+
+  async purgeOldData(retentionDays: number): Promise<RetentionSummary> {
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+
+    const deletedEvents = await db
+      .delete(events)
+      .where(sql`
+        ${events.receivedAt} < ${cutoff}
+        OR ${events.expectedRunId} IN (
+          SELECT id FROM ${expectedRuns}
+          WHERE ${expectedRuns.deadlineAt} < ${cutoff}
+            AND ${expectedRuns.status} <> 'PENDING'
+        )
+        OR ${events.emailId} IN (
+          SELECT id FROM ${emails}
+          WHERE ${emails.receivedAt} IS NOT NULL
+            AND ${emails.receivedAt} < ${cutoff}
+        )
+      `)
+      .returning({ id: events.id });
+
+    const deletedExpectedRuns = await db
+      .delete(expectedRuns)
+      .where(and(lt(expectedRuns.deadlineAt, cutoff), ne(expectedRuns.status, "PENDING")))
+      .returning({ id: expectedRuns.id });
+
+    const deletedEmails = await db
+      .delete(emails)
+      .where(sql`${emails.receivedAt} IS NOT NULL AND ${emails.receivedAt} < ${cutoff}`)
+      .returning({ id: emails.id });
+
+    const deletedProxmoxChecks = await db
+      .delete(proxmoxChecks)
+      .where(lt(proxmoxChecks.checkedAt, cutoff))
+      .returning({ id: proxmoxChecks.id });
+
+    const deletedIncidents = await db
+      .delete(incidents)
+      .where(and(lt(incidents.updatedAt, cutoff), ne(incidents.state, "OPEN")))
+      .returning({ id: incidents.id });
+
+    await db.delete(rateLimitHits).where(lt(rateLimitHits.resetAt, new Date()));
+
+    return {
+      cutoff,
+      deletedEvents: deletedEvents.length,
+      deletedExpectedRuns: deletedExpectedRuns.length,
+      deletedEmails: deletedEmails.length,
+      deletedProxmoxChecks: deletedProxmoxChecks.length,
+      deletedIncidents: deletedIncidents.length,
+    };
   }
 
   async getDashboardStats() {

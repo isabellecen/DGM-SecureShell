@@ -10,6 +10,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Button } from "@/components/ui/button";
 import { LogOut } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
+import { completeLogoutCache, prepareLogoutCache } from "@/lib/auth-cache";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/dashboard";
 import EmailInbox from "@/pages/email-inbox";
@@ -89,21 +90,13 @@ function AuthGate() {
 function AuthenticatedShell() {
   const logoutMutation = useMutation({
     onMutate: async () => {
-      await queryClient.cancelQueries({
-        predicate: (query) => query.queryKey[0] !== "/api/auth/me",
-      });
+      await prepareLogoutCache(queryClient);
     },
     mutationFn: async () => {
       return apiRequest("POST", "/api/auth/logout");
     },
     onSuccess: async () => {
-      await queryClient.cancelQueries({
-        predicate: (query) => query.queryKey[0] !== "/api/auth/me",
-      });
-      queryClient.setQueryData(["/api/auth/me"], null);
-      queryClient.removeQueries({
-        predicate: (query) => query.queryKey[0] !== "/api/auth/me",
-      });
+      await completeLogoutCache(queryClient);
     },
   });
 

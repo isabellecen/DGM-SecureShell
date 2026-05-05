@@ -49,6 +49,7 @@ type CollectInput = {
   password: string;
   hostKeyFingerprint?: string | null;
   allowInsecureHostKey?: boolean | null;
+  timeoutSeconds?: number | null;
 };
 
 const SSH_ERROR_PREFIX = "__SSH_ERROR__:";
@@ -72,13 +73,14 @@ function runSSH(
     const allowInsecureHostKey =
       input.allowInsecureHostKey === true ||
       process.env.ALLOW_INSECURE_SSH_HOST_KEYS === "1";
+    const timeoutMs = Math.max(1, input.timeoutSeconds || 20) * 1000;
 
     const timeout = setTimeout(() => {
       if (done) return;
       done = true;
       try { conn.end(); } catch {}
       reject(new Error("SSH_TIMEOUT"));
-    }, 20000);
+    }, timeoutMs);
 
     conn
       .on("ready", () => {
@@ -116,7 +118,7 @@ function runSSH(
         port: input.port,
         username: input.username,
         password: input.password,
-        readyTimeout: 15000,
+        readyTimeout: timeoutMs,
         tryKeyboard: false,
         hostHash: "sha256",
         hostVerifier: (hashedKey) => {

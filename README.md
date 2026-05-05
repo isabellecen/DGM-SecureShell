@@ -21,6 +21,8 @@ The application is built to help technical teams spot missed backups, unmatched 
 - Notification recipient and route configuration
 - IMAP polling for backup notification ingestion
 - SMTP delivery for incident notifications
+- Daily operational summary emails
+- Scheduler status, audit history, and retention cleanup controls
 - Dark/light theme support
 - Demo seed data in development
 
@@ -112,6 +114,9 @@ node dist/index.cjs
 | `npm test` | Runs the focused server test suite |
 | `npm run verify` | Runs type checking and tests |
 | `npm run db:push` | Applies the Drizzle schema to the configured PostgreSQL database |
+| `npm run db:generate` | Generates tracked Drizzle migration files |
+| `npm run db:migrate` | Applies tracked Drizzle migrations |
+| `npm run admin:hash-password -- "password"` | Generates an `ADMIN_PASSWORD_HASH` value |
 
 ## Configuration
 
@@ -135,11 +140,13 @@ Environment variables:
 | `PROXMOX_POLL_INTERVAL_MINUTES` | Proxmox health polling interval, default `5` |
 | `BACKUP_TARGET_POLL_INTERVAL_MINUTES` | Backup target capacity polling interval, default `30` |
 | `IMAP_POLL_INTERVAL_MINUTES` | IMAP polling interval, default `60` |
+| `RETENTION_DAYS` | Retention window for old emails, checks, expected runs, and resolved incidents, default `90` |
 | `LOGIN_RATE_LIMIT_MAX` | Login attempts allowed per 15-minute window, default `8` |
 | `ALLOW_INSECURE_TARGET_TLS` | Development escape hatch for self-signed target TLS |
 | `ALLOW_INSECURE_SSH_HOST_KEYS` | Development escape hatch for SSH host key verification |
+| `ALLOW_PRODUCTION_INSECURE_TARGETS` | Explicit production override for insecure target TLS/SSH bypasses |
 
-Application settings are also editable from the Settings page. The current UI includes IMAP, SMTP, recipient, and general settings such as `IMAP_HOST`, `IMAP_PORT`, `IMAP_USER`, `IMAP_PASS`, `IMAP_POLL_INTERVAL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `APP_TIMEZONE`, `RETENTION_DAYS`, `SSH_TIMEOUT`, `CONSECUTIVE_FAILURE_THRESHOLD`, and `DAILY_REPORT_TIME`.
+Application settings are also editable from the Settings page. The current UI includes IMAP, SMTP, recipients, notification routes, operations, audit history, and general settings such as `IMAP_HOST`, `IMAP_PORT`, `IMAP_USER`, `IMAP_PASS`, `IMAP_POLL_INTERVAL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `APP_TIMEZONE`, `RETENTION_DAYS`, `SSH_TIMEOUT`, `CONSECUTIVE_FAILURE_THRESHOLD`, and `DAILY_REPORT_TIME`.
 
 ## Security Notes
 
@@ -149,7 +156,7 @@ Application settings are also editable from the Settings page. The current UI in
 - Mutating API requests reject cross-site origins, login attempts are rate-limited, and common browser security headers are set by the server.
 - Use a stable `SECRET_ENCRYPTION_KEY`; changing it can prevent previously encrypted secrets from decrypting.
 - In production, set `SESSION_SECRET` and either `ADMIN_PASSWORD` or `ADMIN_PASSWORD_HASH`.
-- Prefer SSH host key fingerprints and TLS fingerprints for monitored targets. The insecure bypass flags are intended only for isolated development or legacy environments.
+- Prefer SSH host key fingerprints and TLS fingerprints for monitored targets. The insecure bypass flags are intended only for isolated development or legacy environments; production requires `ALLOW_PRODUCTION_INSECURE_TARGETS=1` before those bypasses are accepted.
 
 ## Project Structure
 
@@ -197,6 +204,7 @@ The server exposes authenticated REST endpoints under `/api` for:
 - Backup targets and manual capacity polls
 - Incidents
 - Recipients and notification routes
+- Scheduler status, audit logs, and maintenance actions
 - App settings
 
 See `server/routes.ts` for the exact route list and request schemas.

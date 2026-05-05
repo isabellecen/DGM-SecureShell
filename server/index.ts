@@ -5,13 +5,15 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDatabase } from "./seed";
 import { registerAuth } from "./auth";
-import { registerSecurity } from "./security";
+import { registerAudit } from "./audit";
+import { enforceInsecureTargetPolicy, registerSecurity } from "./security";
 import { startScheduler } from "./scheduler";
 import { pool } from "./db";
 import { ZodError } from "zod";
 
 const app = express();
 const httpServer = createServer(app);
+enforceInsecureTargetPolicy();
 registerSecurity(app);
 
 declare module "http" {
@@ -94,6 +96,7 @@ app.use((req, res, next) => {
   }
 
   registerAuth(app);
+  registerAudit(app);
   await registerRoutes(httpServer, app);
   if (databaseReady) {
     startScheduler();
