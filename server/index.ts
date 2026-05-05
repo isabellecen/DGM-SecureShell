@@ -7,6 +7,7 @@ import { seedDatabase } from "./seed";
 import { registerAuth } from "./auth";
 import { registerSecurity } from "./security";
 import { startScheduler } from "./scheduler";
+import { pool } from "./db";
 import { ZodError } from "zod";
 
 const app = express();
@@ -40,6 +41,34 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+function errorCode(err: unknown): string | undefined {
+  const code = (err as { code?: unknown })?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+async function checkDatabaseConnection(): Promise<boolean> {
+  try {
+    await pool.query("select 1");
+    return true;
+  } catch (err) {
+    const code = errorCode(err);
+    const detail = code ? `${code}: ${errorMessage(err)}` : errorMessage(err);
+
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(`Database connection failed: ${detail}`);
+    }
+
+    console.error(
+      `Database unavailable (${detail}). Start PostgreSQL or update DATABASE_URL, then run npm run db:push and restart npm run dev. Skipping seed data and background schedulers for this process.`,
+    );
+    return false;
+  }
+}
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -56,7 +85,9 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  if (process.env.SEED_ON_BOOT === "1" || process.env.NODE_ENV !== "production") {
+  const databaseReady = await checkDatabaseConnection();
+
+  if (databaseReady && (process.env.SEED_ON_BOOT === "1" || process.env.NODE_ENV !== "production")) {
     await seedDatabase().catch((err) => {
       console.error("Seed error (non-fatal):", err.message);
     });
@@ -64,7 +95,9 @@ app.use((req, res, next) => {
 
   registerAuth(app);
   await registerRoutes(httpServer, app);
-  startScheduler();
+  if (databaseReady) {
+    startScheduler();
+  }
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err instanceof ZodError ? 400 : err.status || err.statusCode || 500;
@@ -99,14 +132,28 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
+  const host = process.env.HOST || "0.0.0.0";
+
+  httpServer.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`Port ${port} is already in use. Set PORT to a free port and restart.`);
+      process.exit(1);
+    }
+
+    console.error("Server failed to start:", err.message);
+    process.exit(1);
+  });
+
   httpServer.listen(
     {
       port,
-      host: "0.0.0.0",
-      reusePort: true,
+      host,
     },
     () => {
       log(`serving on port ${port}`);
     },
   );
-})();
+})().catch((err) => {
+  console.error("Fatal startup error:", err);
+  process.exit(1);
+});

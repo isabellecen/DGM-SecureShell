@@ -21,10 +21,36 @@ if (!command) {
   process.exit(1);
 }
 
-const child = spawn(command, commandArgs, {
+function resolveCommand(command, commandArgs) {
+  if (command === "node" || command === "node.exe") {
+    return { command: process.execPath, args: commandArgs };
+  }
+
+  if (command === "tsx" || command === "tsx.cmd") {
+    return { command: process.execPath, args: [require.resolve("tsx/cli"), ...commandArgs] };
+  }
+
+  return { command, args: commandArgs };
+}
+
+let resolved;
+try {
+  resolved = resolveCommand(command, commandArgs);
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`Failed to resolve ${command}:`, message);
+  process.exit(1);
+}
+
+const child = spawn(resolved.command, resolved.args, {
   env: process.env,
   stdio: "inherit",
-  shell: process.platform === "win32",
+  shell: false,
+});
+
+child.on("error", (err) => {
+  console.error(`Failed to start ${command}:`, err.message);
+  process.exit(1);
 });
 
 child.on("exit", (code, signal) => {
