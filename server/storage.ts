@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, sql, and, count, lt, ne } from "drizzle-orm";
+import { eq, desc, sql, and, count, lt, ne, gte, lte } from "drizzle-orm";
 import {
   customers, insertCustomerSchema, type Customer, type InsertCustomer,
   jobs, type Job, type InsertJob,
@@ -19,6 +19,7 @@ import {
   rateLimitHits,
 } from "@shared/schema";
 import { decryptSecret, encryptSecret, isSecretSettingKey } from "./crypto";
+import { detectEventStatus } from "./emailStatus";
 
 type WithCustomerName = { customerName?: string | null };
 type WithJobName = { jobName?: string | null };
@@ -415,12 +416,66 @@ export class DatabaseStorage implements IStorage {
   }
 
   async linkEmailToJob(emailId: number, jobId: number): Promise<Email | undefined> {
-    const [result] = await db
-      .update(emails)
-      .set({ matchedJobId: jobId, ingestedOk: true })
-      .where(eq(emails.id, emailId))
-      .returning();
-    return result;
+    return db.transaction(async (tx) => {
+      const [email] = await tx.select().from(emails).where(eq(emails.id, emailId));
+      if (!email) {
+        return undefined;
+      }
+
+      const receivedAt = email.receivedAt || new Date();
+      const status = detectEventStatus(`${email.subject || ""}\n${email.snippet || ""}`);
+      const [run] = await tx
+        .select()
+        .from(expectedRuns)
+        .where(
+          and(
+            eq(expectedRuns.jobId, jobId),
+            eq(expectedRuns.status, "PENDING"),
+            lte(expectedRuns.scheduledFor, receivedAt),
+            gte(expectedRuns.deadlineAt, receivedAt),
+          ),
+        )
+        .orderBy(desc(expectedRuns.scheduledFor))
+        .limit(1);
+
+      const [existingEvent] = await tx.select().from(events).where(eq(events.emailId, emailId)).limit(1);
+      const [event] = existingEvent
+        ? await tx
+            .update(events)
+            .set({
+              jobId,
+              expectedRunId: run?.id ?? null,
+              status,
+              receivedAt,
+            })
+            .where(eq(events.id, existingEvent.id))
+            .returning()
+        : await tx
+            .insert(events)
+            .values({
+              jobId,
+              expectedRunId: run?.id ?? null,
+              status,
+              receivedAt,
+              emailId,
+            })
+            .returning();
+
+      const [result] = await tx
+        .update(emails)
+        .set({ matchedJobId: jobId, ingestedOk: true })
+        .where(eq(emails.id, emailId))
+        .returning();
+
+      if (run && status !== "UNKNOWN") {
+        await tx
+          .update(expectedRuns)
+          .set({ status, linkedEventId: event.id })
+          .where(eq(expectedRuns.id, run.id));
+      }
+
+      return result;
+    });
   }
 
   async getUnmatchedEmailCount(): Promise<number> {

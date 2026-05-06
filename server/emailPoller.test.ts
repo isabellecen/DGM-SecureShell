@@ -3,13 +3,19 @@ import test from "node:test";
 
 process.env.DATABASE_URL ||= "postgres://user:password@localhost:5432/protectiveshell_test";
 
-const { detectEventStatus, parseEmailSource } = await import("./emailPoller");
+const { detectEventStatus, parseEmailSource, selectUidsForPoll } = await import("./emailPoller");
 
 test("detectEventStatus classifies common backup messages", () => {
   assert.equal(detectEventStatus("Backup completed successfully"), "OK");
   assert.equal(detectEventStatus("Completed with 2 warnings"), "WARN");
   assert.equal(detectEventStatus("TASK ERROR: sync job failed"), "FAIL");
+  assert.equal(detectEventStatus("Backup completed successfully with 0 errors and 0 warnings"), "OK");
+  assert.equal(detectEventStatus("Backup finished. No errors. No warnings."), "OK");
   assert.equal(detectEventStatus("Started backup job"), "UNKNOWN");
+});
+
+test("selectUidsForPoll fetches the oldest unprocessed batch first", () => {
+  assert.deepEqual(selectUidsForPoll([7, 3, 6, 4, 5], 2, 2), [3, 4]);
 });
 
 test("parseEmailSource extracts headers and snippet from IMAP fetch output", () => {

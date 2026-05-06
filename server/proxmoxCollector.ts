@@ -158,7 +158,7 @@ function parseZpoolList(raw: string) {
   for (const line of lines) {
     const parts = line.split(/\t+/);
     if (parts.length < 2) continue;
-    const [name, size, alloc, free, , frag, cap, , health] = parts;
+    const [name, size, alloc, free, frag, cap, health] = parts;
     if (!name || name === "NAME") continue;
     pools.push({
       name,
@@ -440,7 +440,7 @@ export async function collectProxmoxHealth(input: CollectInput): Promise<Proxmox
     const [hostname, zpoolRaw, mdstatRaw, lspciRaw, lsblkRaw, smartScanRaw, storcliPath, megacliPath] =
       await Promise.all([
         ssh(input, "hostname"),
-        ssh(input, "command -v zpool >/dev/null 2>&1 && zpool list -H 2>/dev/null || true"),
+        ssh(input, "command -v zpool >/dev/null 2>&1 && zpool list -H -o name,size,alloc,free,frag,cap,health 2>/dev/null || true"),
         ssh(input, "cat /proc/mdstat 2>/dev/null || true"),
         ssh(input, "lspci 2>/dev/null | grep -iE 'raid|storage|scsi|sas|megaraid|perc|smartarray' || true"),
         ssh(input, "lsblk -J -d -o NAME,MODEL,SIZE,TYPE 2>/dev/null || lsblk -dn -o NAME,MODEL,SIZE,TYPE --pairs 2>/dev/null || true"),
@@ -634,3 +634,7 @@ export async function collectProxmoxHealth(input: CollectInput): Promise<Proxmox
     };
   }
 }
+
+export const proxmoxCollectorInternals = {
+  parseZpoolList,
+};

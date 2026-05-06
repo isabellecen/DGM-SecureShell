@@ -10,6 +10,8 @@ import {
   imapCheckpoints,
   jobRules,
 } from "@shared/schema";
+export { detectEventStatus } from "./emailStatus";
+import { detectEventStatus } from "./emailStatus";
 
 type ImapSettings = {
   host: string;
@@ -75,9 +77,11 @@ async function pollConfiguredMailbox(settings: ImapSettings) {
     await client.login();
     const selected = await client.select(settings.folder);
     const checkpoint = await getCheckpoint(settings.folder, selected.uidvalidity);
-    const uids = (await client.searchNewUids(checkpoint.lastSeenUid))
-      .filter((uid) => uid > checkpoint.lastSeenUid)
-      .slice(-settings.fetchLimit);
+    const uids = selectUidsForPoll(
+      await client.searchNewUids(checkpoint.lastSeenUid),
+      checkpoint.lastSeenUid,
+      settings.fetchLimit,
+    );
 
     let maxUid = checkpoint.lastSeenUid;
     for (const uid of uids) {
@@ -91,6 +95,17 @@ async function pollConfiguredMailbox(settings: ImapSettings) {
   } finally {
     await client.logout().catch(() => undefined);
   }
+}
+
+export function selectUidsForPoll(
+  candidateUids: number[],
+  lastSeenUid: number,
+  fetchLimit: number,
+): number[] {
+  return candidateUids
+    .filter((uid) => uid > lastSeenUid)
+    .sort((a, b) => a - b)
+    .slice(0, fetchLimit);
 }
 
 async function persistParsedEmail(
@@ -160,7 +175,7 @@ async function persistParsedEmail(
     .set({ matchedJobId: rule.jobId, ingestedOk: true })
     .where(eq(emails.id, inserted.id));
 
-  if (run) {
+  if (run && status !== "UNKNOWN") {
     await db
       .update(expectedRuns)
       .set({ status, linkedEventId: event.id })
@@ -188,20 +203,6 @@ async function findMatchingRule(parsed: ParsedEmail) {
     }
     return activeChecks.every(([needle, value]) => value.includes(needle!.trim().toLowerCase()));
   });
-}
-
-export function detectEventStatus(text: string): "OK" | "WARN" | "FAIL" | "UNKNOWN" {
-  const normalized = text.toLowerCase();
-  if (/\b(fail(?:ed|ure)?|error|aborted|cancelled|critical|task error)\b/.test(normalized)) {
-    return "FAIL";
-  }
-  if (/\b(warn(?:ing)?s?|skipped|retry|degraded)\b/.test(normalized)) {
-    return "WARN";
-  }
-  if (/\b(success|successful|completed|ok|finished)\b/.test(normalized)) {
-    return "OK";
-  }
-  return "UNKNOWN";
 }
 
 async function getCheckpoint(folder: string, uidvalidity: number) {
