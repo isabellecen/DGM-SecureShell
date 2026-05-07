@@ -27,7 +27,7 @@ async function pollSynology(input: TargetInput): Promise<PollResult> {
   const base = `https://${input.host}:${input.port}/webapi`;
 
   // Step 1: Authenticate
-  const authUrl = `${base}/entry.cgi?` + new URLSearchParams({
+  const authBody = new URLSearchParams({
     api: "SYNO.API.Auth",
     version: "7",
     method: "login",
@@ -36,7 +36,11 @@ async function pollSynology(input: TargetInput): Promise<PollResult> {
     format: "sid",
   });
 
-  const authRes = await fetchTargetApi(authUrl, undefined, input);
+  const authRes = await fetchTargetApi(`${base}/entry.cgi`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: authBody.toString(),
+  }, input);
   if (!authRes.success) {
     const errCode = authRes.error?.code;
     const errMsg = errCode === 400 ? "Invalid credentials"

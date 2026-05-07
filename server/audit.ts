@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { storage } from "./storage";
+import { isSecretSettingKey } from "./crypto";
 
 const auditedMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const redactedKey = /(pass|password|secret|token|private[_-]?key|api[_-]?key)/i;
@@ -19,6 +20,21 @@ function sanitize(value: unknown): unknown {
   }
 
   return value;
+}
+
+function sanitizeRequestBody(req: Request): unknown {
+  const sanitized = sanitize(req.body);
+  if (req.path === "/api/settings" && req.body && typeof req.body === "object") {
+    const body = req.body as Record<string, unknown>;
+    if (typeof body.key === "string" && isSecretSettingKey(body.key)) {
+      return {
+        ...(sanitized as Record<string, unknown>),
+        value: "[redacted]",
+      };
+    }
+  }
+
+  return sanitized;
 }
 
 function entityFromPath(path: string): { entityType: string; entityId?: string } {
@@ -71,7 +87,7 @@ export function registerAudit(app: Express) {
           method: req.method,
           path: req.path,
           statusCode: res.statusCode,
-          body: sanitize(req.body),
+          body: sanitizeRequestBody(req),
           query: sanitize(req.query),
         },
       }).catch((err) => {
@@ -85,5 +101,6 @@ export function registerAudit(app: Express) {
 
 export const auditInternals = {
   sanitize,
+  sanitizeRequestBody,
   entityFromPath,
 };

@@ -176,14 +176,25 @@ async function resolveRecipients(incident: Incident): Promise<Recipient[]> {
     return route.scopeType === "GLOBAL" || route.scopeType === "CUSTOMER" || route.scopeType === "JOB";
   });
 
-  const routeRecipients = matchingRoutes.flatMap((route) => recipientsFromRoute(route.recipientsJson, allRecipients));
-  if (routeRecipients.length > 0) {
-    return uniqueRecipients(routeRecipients);
+  const routeRecipients = recipientsForMatchingRoutes(matchingRoutes, allRecipients);
+  if (routeRecipients) {
+    return routeRecipients;
   }
 
   return uniqueRecipients(
     allRecipients.filter((recipient) => recipient.customerId == null || recipient.customerId === customerId),
   );
+}
+
+function recipientsForMatchingRoutes(
+  matchingRoutes: Pick<typeof notificationRoutes.$inferSelect, "recipientsJson">[],
+  allRecipients: Recipient[],
+): Recipient[] | null {
+  if (matchingRoutes.length === 0) {
+    return null;
+  }
+
+  return uniqueRecipients(matchingRoutes.flatMap((route) => recipientsFromRoute(route.recipientsJson, allRecipients)));
 }
 
 function recipientsFromRoute(value: unknown, allRecipients: Recipient[]): Recipient[] {
@@ -474,3 +485,7 @@ async function getSmtpSettings(): Promise<SmtpSettings | null> {
 async function setting(key: string): Promise<string | undefined> {
   return (await storage.getSettingValue(key)) || process.env[key];
 }
+
+export const notificationServiceInternals = {
+  recipientsForMatchingRoutes,
+};

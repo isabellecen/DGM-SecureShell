@@ -26,6 +26,36 @@ test("audit sanitizer redacts secret-like fields", () => {
   );
 });
 
+test("audit request sanitizer redacts secret setting values", () => {
+  assert.deepEqual(
+    auditInternals.sanitizeRequestBody({
+      path: "/api/settings",
+      body: {
+        key: "IMAP_PASS",
+        value: "mail-secret",
+      },
+    } as any),
+    {
+      key: "IMAP_PASS",
+      value: "[redacted]",
+    },
+  );
+
+  assert.deepEqual(
+    auditInternals.sanitizeRequestBody({
+      path: "/api/settings",
+      body: {
+        key: "APP_TIMEZONE",
+        value: "America/Phoenix",
+      },
+    } as any),
+    {
+      key: "APP_TIMEZONE",
+      value: "America/Phoenix",
+    },
+  );
+});
+
 test("audit entity parser extracts API resource and numeric id", () => {
   assert.deepEqual(auditInternals.entityFromPath("/api/jobs/42"), {
     entityType: "jobs",

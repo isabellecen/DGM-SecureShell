@@ -41,6 +41,10 @@ export async function runProxmoxHostCheck(hostId: number) {
     consecutiveFailures,
   });
 
+  if (!failed) {
+    await resolveOperationalIncidents("PROXMOX", hostId, `proxmox:${hostId}:unreachable`);
+  }
+
   if (failed) {
     const threshold = await numericSetting("CONSECUTIVE_FAILURE_THRESHOLD", 3);
     if (consecutiveFailures >= threshold) {
@@ -98,6 +102,10 @@ export async function pollBackupTargetAndPersist(targetId: number) {
   }
 
   await storage.updateBackupTarget(targetId, updateData);
+
+  if (result.pollStatus !== "ERROR") {
+    await resolveOperationalIncidents("MONITOR", targetId, `backup-target:${targetId}:poll-error`);
+  }
 
   if (result.pollStatus === "ERROR") {
     await upsertOperationalIncident({
