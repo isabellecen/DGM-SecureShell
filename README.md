@@ -20,10 +20,12 @@ The application is built to help technical teams spot missed backups, unmatched 
 - Proxmox check history and per-host detail views
 - Incident state management
 - Notification recipient and route configuration
+- Confirmation dialogs for destructive operator actions
 - IMAP polling for backup notification ingestion
 - SMTP delivery for incident notifications
 - Daily operational summary emails
 - Scheduler status, audit history, and retention cleanup controls
+- Health and readiness endpoints for process/database/scheduler monitoring
 - Dark/light theme support
 - Demo seed data in development
 
@@ -90,19 +92,22 @@ Development mode seeds sample data automatically when the database has no custom
 
 ## Windows Note
 
-The npm scripts use inline environment variable syntax that works in Linux/macOS shells and Replit. If `npm run dev` fails in native Windows PowerShell, run:
+The npm scripts use `script/run-with-env.cjs` so `npm run dev` and `npm start` work across Linux/macOS shells and native Windows PowerShell.
+
+If PowerShell blocks the `npm` shim with a script execution policy error, call the Windows command shim directly:
 
 ```powershell
-$env:NODE_ENV="development"
-npx tsx server/index.ts
+npm.cmd run dev
 ```
 
-For production:
+The same applies to verification and builds:
 
 ```powershell
-$env:NODE_ENV="production"
-node dist/index.cjs
+npm.cmd run verify
+npm.cmd run build
 ```
+
+`npm run build` and `npm run dev` use tools such as Vite, tsx, and esbuild that start helper processes. If a locked-down Windows host blocks Node child processes with `spawn EPERM`, run verification locally and build on CI/Linux or adjust the host policy so Node can start those helpers.
 
 ## Scripts
 
@@ -112,7 +117,7 @@ node dist/index.cjs
 | `npm run build` | Builds the frontend into `dist/public` and bundles the server to `dist/index.cjs` |
 | `npm start` | Starts the production server from `dist/index.cjs` |
 | `npm run check` | Runs TypeScript type checking |
-| `npm test` | Runs the focused server test suite |
+| `npm test` | Runs the focused server and client regression tests |
 | `npm run verify` | Runs type checking and tests |
 | `npm run db:push` | Applies the Drizzle schema to the configured PostgreSQL database |
 | `npm run db:generate` | Generates tracked Drizzle migration files |
@@ -155,6 +160,7 @@ Application settings are also editable from the Settings page. The current UI in
 - Sessions are stored in PostgreSQL in the `user_sessions` table.
 - Proxmox host passwords, backup target passwords, and secret-like settings are encrypted before storage.
 - Mutating API requests reject cross-site origins, login attempts are rate-limited, and common browser security headers are set by the server.
+- `/readyz` returns detailed database and scheduler diagnostics outside production, but production only returns the top-level readiness result.
 - Use a stable `SECRET_ENCRYPTION_KEY`; changing it can prevent previously encrypted secrets from decrypting.
 - In production, set `SESSION_SECRET` and either `ADMIN_PASSWORD` or `ADMIN_PASSWORD_HASH`.
 - Prefer SSH host key fingerprints and TLS fingerprints for monitored targets. The insecure bypass flags are intended only for isolated development or legacy environments; production requires `ALLOW_PRODUCTION_INSECURE_TARGETS=1` before those bypasses are accepted.
@@ -167,8 +173,10 @@ client/
   src/
     App.tsx
     components/
+      confirm-action.tsx  Reusable destructive-action confirmation dialog
     hooks/
     lib/
+      workflow-payloads.ts  Shared client request-payload builders
     pages/
 
 server/
@@ -186,6 +194,7 @@ server/
 
 shared/
   schema.ts            Drizzle tables and shared types
+  monitoringPayloads.ts Shared Zod schemas for monitoring JSON payloads
 
 script/
   build.mjs            Production build script
@@ -208,6 +217,11 @@ The server exposes authenticated REST endpoints under `/api` for:
 - Scheduler status, audit logs, and maintenance actions
 - App settings
 
+Unauthenticated health endpoints are also available:
+
+- `/healthz` returns a lightweight liveness result.
+- `/readyz` checks database readiness and scheduler state. Non-production responses include diagnostic detail; production responses only expose the top-level readiness boolean.
+
 See `server/routes.ts` for the exact route list and request schemas.
 
 For production deployment, operations, and a complete configuration reference, see [OPERATIONS.md](OPERATIONS.md).
@@ -227,6 +241,12 @@ npm start
 ```
 
 In production, the Express server serves static frontend files from `dist/public` and the API from the same port.
+
+Production builds intentionally omit development-only Vite helper plugins such as the runtime error overlay.
+
+## Test Coverage
+
+`npm run verify` runs TypeScript plus focused server and client regression tests. Current client coverage includes auth-cache behavior and workflow payload builders for login, jobs, email linking, backup targets, Proxmox hosts, settings, recipients, and notification routes.
 
 ## Monitoring Behavior
 

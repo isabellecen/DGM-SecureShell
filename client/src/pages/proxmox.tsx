@@ -38,40 +38,17 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import type { ProxmoxHost, Customer } from "@shared/schema";
+import type { ProxmoxHealthPayload } from "@shared/monitoringPayloads";
+import { parseProxmoxHealthPayload } from "@shared/monitoringPayloads";
 import { format } from "date-fns";
-
-interface HealthPayload {
-  overall_status?: string;
-  storage_type?: string;
-  components?: {
-    zfs?: {
-      status: string;
-      pools?: { name: string; state: string }[];
-    };
-    smart?: {
-      status: string;
-      disks_total?: number;
-      disks_warning?: number;
-      disks_failed?: number;
-    };
-    raid?: {
-      status: string;
-      virtual_disks_degraded?: number;
-      predictive_failures?: number;
-    };
-    mdadm?: {
-      status: string;
-      arrays_degraded?: number;
-    };
-  };
-  monitoring_error?: string | null;
-}
+import { ConfirmActionButton } from "@/components/confirm-action";
+import { buildProxmoxHostPayload } from "@/lib/workflow-payloads";
 
 interface ProxmoxHostWithCustomer extends ProxmoxHost {
   customerName?: string;
 }
 
-function getHealthSummaryLines(payload: HealthPayload | null | undefined): string[] {
+function getHealthSummaryLines(payload: ProxmoxHealthPayload | null | undefined): string[] {
   if (!payload) return ["No check data available"];
 
   if (payload.monitoring_error) {
@@ -125,7 +102,7 @@ function getHealthSummaryLines(payload: HealthPayload | null | undefined): strin
   return lines.length > 0 ? lines.slice(0, 3) : ["All storage healthy"];
 }
 
-function getComponentBadges(payload: HealthPayload | null | undefined) {
+function getComponentBadges(payload: ProxmoxHealthPayload | null | undefined) {
   if (!payload || !payload.components) return [];
   const badges: { label: string; status: string }[] = [];
   const comp = payload.components;
@@ -196,19 +173,17 @@ function HostFormDialog({
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const payload: any = {
+      const payload = buildProxmoxHostPayload({
         name,
         host: hostAddr,
-        port: parseInt(port) || 22,
+        port,
         username,
-        hostKeyFingerprint: hostKeyFingerprint || null,
+        password,
+        hostKeyFingerprint,
         allowInsecureHostKey,
-        customerId: customerId && customerId !== "none" ? parseInt(customerId) : null,
+        customerId,
         enabled,
-      };
-      if (password || !isEditing) {
-        payload.password = password;
-      }
+      }, isEditing);
       if (isEditing) {
         return apiRequest("PATCH", `/api/proxmox-hosts/${host.id}`, payload);
       }
@@ -447,7 +422,7 @@ export default function Proxmox() {
       ) : (
         <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
           {hosts.map((host) => {
-            const payload = host.lastStatusDetails as HealthPayload | null;
+            const payload = parseProxmoxHealthPayload(host.lastStatusDetails);
             const summaryLines = getHealthSummaryLines(payload);
             const componentBadges = getComponentBadges(payload);
             const storageType = payload?.storage_type;
@@ -572,20 +547,19 @@ export default function Proxmox() {
                       <Pencil className="h-3.5 w-3.5 mr-1" />
                       Edit
                     </Button>
-                    <Button
+                    <ConfirmActionButton
                       size="sm"
                       variant="ghost"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (window.confirm(`Remove ${host.name} from monitoring? Check history for this host will be deleted.`)) {
-                          deleteMutation.mutate(host.id);
-                        }
-                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      title={`Remove ${host.name}?`}
+                      description="Check history for this host will be deleted and open monitoring incidents will be resolved."
+                      confirmLabel="Remove"
+                      onConfirm={() => deleteMutation.mutate(host.id)}
                       data-testid={`button-delete-host-${host.id}`}
                     >
                       <Trash2 className="h-3.5 w-3.5 mr-1" />
                       Remove
-                    </Button>
+                    </ConfirmActionButton>
                     <div className="ml-auto">
                       <Button
                         size="icon"

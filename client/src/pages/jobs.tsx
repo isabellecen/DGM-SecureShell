@@ -34,6 +34,8 @@ import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Job, Customer } from "@shared/schema";
+import { ConfirmActionButton } from "@/components/confirm-action";
+import { buildJobPayload } from "@/lib/workflow-payloads";
 
 interface JobWithCustomer extends Job {
   customerName?: string;
@@ -78,18 +80,18 @@ function JobFormDialog({
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const payload = {
+      const payload = buildJobPayload({
         name,
         systemType,
-        customerId: customerId && customerId !== "none" ? parseInt(customerId) : null,
+        customerId,
         scheduleType,
         scheduleTime,
-        windowHours: parseInt(windowHours) || 6,
+        windowHours,
         enabled,
         longRunning,
-        longWindowHours: longRunning ? parseInt(longWindowHours) || 24 : undefined,
-        daysOfWeek: scheduleType === "weekly" ? daysOfWeek : [],
-      };
+        longWindowHours,
+        daysOfWeek,
+      });
       if (isEditing) {
         return apiRequest("PATCH", `/api/jobs/${job.id}`, payload);
       }
@@ -372,18 +374,17 @@ export default function Jobs() {
                         >
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
-                        <Button
+                        <ConfirmActionButton
                           size="icon"
                           variant="ghost"
-                          onClick={() => {
-                            if (window.confirm(`Delete backup job ${job.name}? Email matches and expected runs for this job will be unlinked.`)) {
-                              deleteMutation.mutate(job.id);
-                            }
-                          }}
+                          title={`Delete ${job.name}?`}
+                          description="Email matches and expected runs for this job will be unlinked."
+                          confirmLabel="Delete"
+                          onConfirm={() => deleteMutation.mutate(job.id)}
                           data-testid={`button-delete-job-${job.id}`}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        </ConfirmActionButton>
                       </div>
                     </TableCell>
                   </TableRow>

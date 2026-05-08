@@ -106,12 +106,13 @@ app.use((req, res, next) => {
     startScheduler();
   }
 
-  app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
-    const status = err instanceof ZodError ? 400 : err.status || err.statusCode || 500;
+  app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    const errorLike = err as { status?: number; statusCode?: number; message?: string };
+    const status = err instanceof ZodError ? 400 : errorLike.status || errorLike.statusCode || 500;
     const message =
       err instanceof ZodError
         ? err.issues.map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`).join("; ")
-        : err.message || "Internal Server Error";
+        : errorLike.message || "Internal Server Error";
 
     if (status >= 500) {
       console.error("Internal Server Error:", err);

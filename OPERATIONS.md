@@ -37,6 +37,8 @@ The `package.json` engine range is `>=20 <26`. Node 20 or 22 LTS is the safest p
 
 `npm run build` uses Vite and esbuild. These tools spawn helper processes. On locked-down Windows environments, PowerShell policy or endpoint protection can block that subprocess with `spawn EPERM`. The code can still type-check and test, but a production bundle requires an environment where Node can spawn esbuild.
 
+Production builds intentionally leave out development-only Vite helper plugins such as the runtime error overlay. Replit helper plugins remain development-only.
+
 Recommended production build environments:
 
 - Linux server or CI runner
@@ -216,7 +218,7 @@ sudo systemctl enable --now protectiveshell
 | `npm run build` | Builds the React frontend into `dist/public` and bundles the server into `dist/index.cjs`. |
 | `npm start` | Starts the production server from `dist/index.cjs`. |
 | `npm run check` | Runs TypeScript type checking. |
-| `npm test` | Runs focused server and client regression tests. |
+| `npm test` | Runs focused server and client regression tests, including health response behavior and UI workflow payload builders. |
 | `npm run verify` | Runs type checking and tests. |
 | `npm run db:push` | Applies the Drizzle schema to the configured PostgreSQL database. |
 | `npm run db:generate` | Generates tracked Drizzle migration files. |
@@ -381,6 +383,16 @@ The server sets:
 
 Mutating `/api` requests reject cross-site origins. When `TRUST_PROXY=1`, forwarded host headers are accepted from the trusted proxy. Do not set `TRUST_PROXY=1` when the app is directly exposed to untrusted clients.
 
+Readiness diagnostics are also environment-aware. `/readyz` includes database and scheduler detail outside production, but in production it only returns the top-level `{ ok }` value to avoid exposing operational internals through a public health endpoint.
+
+## Operator Safeguards And Payload Contracts
+
+Destructive UI actions use confirmation dialogs instead of browser-native prompts. Deleting customers, jobs, recipients, notification routes, Proxmox hosts, and backup targets presents the operator with the specific consequence before the mutation runs.
+
+Client form workflows share request-payload builders in `client/src/lib/workflow-payloads.ts`. These normalize optional select values, numeric defaults, secret-preserving edit behavior, email linking payloads, settings updates, recipients, and notification routes. The builders are covered by regression tests so UI refactors are less likely to drift from API expectations.
+
+Monitoring JSON payloads use shared Zod schemas in `shared/monitoringPayloads.ts`. The frontend parses Proxmox health and backup datastore payloads through those schemas before rendering, which keeps partial or unexpected collector data from leaking directly into display logic.
+
 ## Background Workers
 
 All workers run inside the main Node process unless `DISABLE_SCHEDULER=1`.
@@ -484,6 +496,8 @@ The collector probes:
 
 The remote user needs enough permission to run the relevant commands. If tools are missing or permission is limited, the payload may show partial data.
 
+API responses for Proxmox hosts always redact stored passwords. Single-host responses include the customer name through a direct joined lookup rather than fetching the full host list.
+
 ## Backup Target Configuration
 
 Backup targets monitor storage capacity over HTTPS.
@@ -504,6 +518,8 @@ Backup targets monitor storage capacity over HTTPS.
 Synology polling uses DSM APIs to authenticate, read volume information, and optionally count shares.
 
 PBS polling authenticates to `/api2/json/access/ticket`, lists datastores, reads datastore status, and counts snapshots when permitted.
+
+API responses for backup targets always redact stored passwords. Single-target responses and manual poll responses include the customer name through a direct joined lookup rather than fetching the full target list.
 
 ## Incident Configuration And Notification Routing
 
@@ -589,6 +605,8 @@ Production recommendations:
 
 Minimum health checks:
 
+- HTTP GET `/healthz` should return `200` with `{ "ok": true }` when the process is alive.
+- HTTP GET `/readyz` should return `200` when the database is reachable and enabled scheduler workers are not stale or in error. In production the body is only `{ "ok": true }` or `{ "ok": false }`; outside production it includes database latency plus stale/error worker detail.
 - HTTP GET `/api/auth/me` should return `401` when unauthenticated. That still proves the app and database-backed session middleware are responding.
 - Watch process logs for scheduler failures.
 - Watch PostgreSQL connection counts.
@@ -596,6 +614,16 @@ Minimum health checks:
 - Confirm Settings IMAP/SMTP test buttons succeed after mail configuration.
 
 The app logs API route method, path, status, and duration for `/api` requests.
+
+### Regression checks
+
+Run before deployment or after significant changes:
+
+```powershell
+npm.cmd run verify
+```
+
+This covers TypeScript, backend behavior, health response hardening, auth-cache behavior, and frontend workflow payload normalization.
 
 ## Troubleshooting
 
@@ -667,7 +695,7 @@ Temporary development fix:
 
 ### Build fails with `spawn EPERM`
 
-This is a host policy issue blocking Vite/esbuild subprocesses. Use Node 20/22 on a machine or CI runner where Node child processes are allowed, or build on Linux and deploy `dist/`.
+This is a host policy issue blocking Vite/esbuild or tsx subprocesses. It can also prevent `npm.cmd run dev` because development mode compiles TypeScript through tsx. Use Node 20/22 on a machine or CI runner where Node child processes are allowed, or build on Linux and deploy `dist/`.
 
 ## Upgrade Checklist
 

@@ -40,6 +40,7 @@ export interface IStorage {
 
   getProxmoxHosts(): Promise<(ProxmoxHost & WithCustomerName)[]>;
   getProxmoxHost(id: number): Promise<ProxmoxHost | undefined>;
+  getProxmoxHostWithCustomer(id: number): Promise<(ProxmoxHost & WithCustomerName) | undefined>;
   createProxmoxHost(data: InsertProxmoxHost): Promise<ProxmoxHost>;
   updateProxmoxHost(id: number, data: ProxmoxHostUpdate): Promise<ProxmoxHost | undefined>;
   deleteProxmoxHost(id: number): Promise<void>;
@@ -78,6 +79,7 @@ export interface IStorage {
 
   getBackupTargets(): Promise<(BackupTarget & WithCustomerName)[]>;
   getBackupTarget(id: number): Promise<BackupTarget | undefined>;
+  getBackupTargetWithCustomer(id: number): Promise<(BackupTarget & WithCustomerName) | undefined>;
   createBackupTarget(data: InsertBackupTarget): Promise<BackupTarget>;
   updateBackupTarget(id: number, data: BackupTargetUpdate): Promise<BackupTarget | undefined>;
   deleteBackupTarget(id: number): Promise<void>;
@@ -242,6 +244,31 @@ export class DatabaseStorage implements IStorage {
 
   async getProxmoxHost(id: number): Promise<ProxmoxHost | undefined> {
     const [result] = await db.select().from(proxmoxHosts).where(eq(proxmoxHosts.id, id));
+    return result ? this.decryptProxmoxHost(result) : undefined;
+  }
+
+  async getProxmoxHostWithCustomer(id: number): Promise<(ProxmoxHost & WithCustomerName) | undefined> {
+    const [result] = await db
+      .select({
+        id: proxmoxHosts.id,
+        customerId: proxmoxHosts.customerId,
+        name: proxmoxHosts.name,
+        host: proxmoxHosts.host,
+        port: proxmoxHosts.port,
+        username: proxmoxHosts.username,
+        password: proxmoxHosts.password,
+        hostKeyFingerprint: proxmoxHosts.hostKeyFingerprint,
+        allowInsecureHostKey: proxmoxHosts.allowInsecureHostKey,
+        enabled: proxmoxHosts.enabled,
+        lastCheckAt: proxmoxHosts.lastCheckAt,
+        lastStatus: proxmoxHosts.lastStatus,
+        lastStatusDetails: proxmoxHosts.lastStatusDetails,
+        consecutiveFailures: proxmoxHosts.consecutiveFailures,
+        customerName: customers.name,
+      })
+      .from(proxmoxHosts)
+      .leftJoin(customers, eq(proxmoxHosts.customerId, customers.id))
+      .where(eq(proxmoxHosts.id, id));
     return result ? this.decryptProxmoxHost(result) : undefined;
   }
 
@@ -578,6 +605,34 @@ export class DatabaseStorage implements IStorage {
 
   async getBackupTarget(id: number): Promise<BackupTarget | undefined> {
     const [result] = await db.select().from(backupTargets).where(eq(backupTargets.id, id));
+    return result ? this.decryptBackupTarget(result) : undefined;
+  }
+
+  async getBackupTargetWithCustomer(id: number): Promise<(BackupTarget & WithCustomerName) | undefined> {
+    const [result] = await db
+      .select({
+        id: backupTargets.id,
+        customerId: backupTargets.customerId,
+        name: backupTargets.name,
+        type: backupTargets.type,
+        host: backupTargets.host,
+        port: backupTargets.port,
+        username: backupTargets.username,
+        password: backupTargets.password,
+        tlsFingerprint: backupTargets.tlsFingerprint,
+        allowInsecureTls: backupTargets.allowInsecureTls,
+        enabled: backupTargets.enabled,
+        totalBytes: backupTargets.totalBytes,
+        usedBytes: backupTargets.usedBytes,
+        lastPolledAt: backupTargets.lastPolledAt,
+        pollStatus: backupTargets.pollStatus,
+        pollError: backupTargets.pollError,
+        datastoresJson: backupTargets.datastoresJson,
+        customerName: customers.name,
+      })
+      .from(backupTargets)
+      .leftJoin(customers, eq(backupTargets.customerId, customers.id))
+      .where(eq(backupTargets.id, id));
     return result ? this.decryptBackupTarget(result) : undefined;
   }
 

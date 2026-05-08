@@ -136,8 +136,8 @@ function runSSH(
 async function ssh(input: CollectInput, cmd: string): Promise<string> {
   try {
     return await runSSH(input, cmd);
-  } catch (e: any) {
-    const msg = e?.message || "";
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "";
     if (msg.startsWith("HOST_KEY_UNVERIFIED")) {
       return `${SSH_ERROR_PREFIX}${msg}`;
     }
@@ -251,21 +251,31 @@ interface LsblkDisk {
   children?: string[];
 }
 
+type LsblkRawDevice = {
+  name?: string;
+  model?: string;
+  size?: string;
+  type?: string;
+  children?: { name?: string }[];
+};
+
 function parseLsblkJson(raw: string): LsblkDisk[] {
   const disks: LsblkDisk[] = [];
   if (!raw) return disks;
 
   try {
     const parsed = JSON.parse(raw);
-    const devices = parsed.blockdevices || [];
+    const devices: LsblkRawDevice[] = Array.isArray(parsed.blockdevices) ? parsed.blockdevices : [];
     for (const dev of devices) {
       if (dev.type === "disk") {
         disks.push({
-          name: dev.name,
+          name: dev.name || "",
           model: (dev.model || "").trim(),
           size: dev.size || "",
           type: dev.type,
-          children: (dev.children || []).map((c: any) => c.name),
+          children: (dev.children || [])
+            .map((child) => child.name)
+            .filter((name): name is string => typeof name === "string"),
         });
       }
     }
@@ -622,7 +632,8 @@ export async function collectProxmoxHealth(input: CollectInput): Promise<Proxmox
     else overall_status = "OK";
 
     return { overall_status, storage_type, components, monitoring_error: null };
-  } catch (e: any) {
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "UNKNOWN_ERROR";
     return {
       overall_status: "UNKNOWN",
       storage_type: "UNKNOWN",
@@ -630,7 +641,7 @@ export async function collectProxmoxHealth(input: CollectInput): Promise<Proxmox
         smart: { status: "UNKNOWN", disks: [], disks_total: 0, disks_warning: 0, disks_failed: 0 },
         meta: { hostname: "" },
       },
-      monitoring_error: e?.message || "UNKNOWN_ERROR",
+      monitoring_error: message,
     };
   }
 }

@@ -46,6 +46,12 @@ import {
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { ConfirmActionButton } from "@/components/confirm-action";
+import {
+  buildNotificationRoutePayload,
+  buildRecipientPayload,
+  buildSettingPayload,
+} from "@/lib/workflow-payloads";
 import type {
   AppSetting,
   AuditLog,
@@ -166,13 +172,13 @@ function NotificationRouteDialog({
 
   const mutation = useMutation({
     mutationFn: async () => {
-      return apiRequest("POST", "/api/notification-routes", {
+      return apiRequest("POST", "/api/notification-routes", buildNotificationRoutePayload({
         scopeType,
-        scopeId: scopeType === "GLOBAL" || scopeId === "none" ? null : Number(scopeId),
+        scopeId,
         eventType,
         severityMin,
-        recipientsJson: recipientIds,
-      });
+        recipientIds,
+      }));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/notification-routes"] });
@@ -330,13 +336,13 @@ function RecipientDialog({
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const payload = {
+      const payload = buildRecipientPayload({
         name,
         email,
         type,
-        customerId: customerId && customerId !== "none" ? parseInt(customerId) : null,
+        customerId,
         enabled,
-      };
+      });
       if (isEditing) {
         return apiRequest("PATCH", `/api/recipients/${recipient.id}`, payload);
       }
@@ -471,7 +477,7 @@ export default function Settings() {
 
   const saveMutation = useMutation({
     mutationFn: async ({ key, value }: { key: string; value: string }) => {
-      return apiRequest("POST", "/api/settings", { key, value });
+      return apiRequest("POST", "/api/settings", buildSettingPayload(key, value));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
@@ -790,18 +796,17 @@ export default function Settings() {
                               >
                                 <Pencil className="h-3.5 w-3.5" />
                               </Button>
-                              <Button
+                              <ConfirmActionButton
                                 size="icon"
                                 variant="ghost"
-                                onClick={() => {
-                                  if (window.confirm(`Remove recipient ${r.name}?`)) {
-                                    deleteRecipientMutation.mutate(r.id);
-                                  }
-                                }}
+                                title={`Remove ${r.name}?`}
+                                description="This recipient will stop receiving notifications from matching routes."
+                                confirmLabel="Remove"
+                                onConfirm={() => deleteRecipientMutation.mutate(r.id)}
                                 data-testid={`button-delete-recipient-${r.id}`}
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
+                              </ConfirmActionButton>
                             </div>
                           </TableCell>
                         </TableRow>
@@ -866,18 +871,17 @@ export default function Settings() {
                             {routeRecipientsLabel(route, recipients || [])}
                           </TableCell>
                           <TableCell>
-                            <Button
+                            <ConfirmActionButton
                               size="icon"
                               variant="ghost"
-                              onClick={() => {
-                                if (window.confirm("Remove this notification route?")) {
-                                  deleteRouteMutation.mutate(route.id);
-                                }
-                              }}
+                              title="Remove this notification route?"
+                              description="Matching alerts will fall back to the remaining custom routes or default routing."
+                              confirmLabel="Remove"
+                              onConfirm={() => deleteRouteMutation.mutate(route.id)}
                               data-testid={`button-delete-notification-route-${route.id}`}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                            </ConfirmActionButton>
                           </TableCell>
                         </TableRow>
                       ))}

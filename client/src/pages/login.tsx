@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { buildLoginPayload } from "@/lib/workflow-payloads";
 
 export default function Login() {
   const [username, setUsername] = useState("");
@@ -13,7 +14,7 @@ export default function Login() {
 
   const mutation = useMutation({
     mutationFn: async () => {
-      return apiRequest("POST", "/api/auth/login", { username, password });
+      return apiRequest("POST", "/api/auth/login", buildLoginPayload(username, password));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });

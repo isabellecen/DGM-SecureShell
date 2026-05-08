@@ -35,6 +35,7 @@ import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Email, Job, Customer } from "@shared/schema";
+import { buildEmailLinkPayload, buildJobPayload, buildJobRulePayload } from "@/lib/workflow-payloads";
 
 interface EmailWithJob extends Email {
   jobName?: string;
@@ -167,31 +168,26 @@ function CreateJobFromEmailDialog({
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const jobPayload = {
+      const jobPayload = buildJobPayload({
         name,
         systemType,
-        customerId: customerId && customerId !== "none" ? parseInt(customerId) : null,
+        customerId,
         scheduleType,
         scheduleTime,
-        windowHours: parseInt(windowHours) || 6,
+        windowHours,
         enabled,
         longRunning: false,
-      };
+      });
       const jobRes = await apiRequest("POST", "/api/jobs", jobPayload);
       const newJob = await jobRes.json();
 
-      await apiRequest("POST", `/api/emails/${email.id}/link-job`, {
-        jobId: newJob.id,
-      });
+      await apiRequest("POST", `/api/emails/${email.id}/link-job`, buildEmailLinkPayload(newJob.id));
 
       if (createRule && email.fromAddr) {
-        await apiRequest("POST", "/api/job-rules", {
+        await apiRequest("POST", "/api/job-rules", buildJobRulePayload({
           jobId: newJob.id,
           senderMatch: email.fromAddr,
-          subjectMatch: null,
-          bodyMatch: null,
-          priority: 0,
-        });
+        }));
       }
 
       return newJob;
@@ -352,9 +348,7 @@ function LinkToJobDialog({
 
   const mutation = useMutation({
     mutationFn: async () => {
-      return apiRequest("POST", `/api/emails/${email.id}/link-job`, {
-        jobId: parseInt(selectedJobId),
-      });
+      return apiRequest("POST", `/api/emails/${email.id}/link-job`, buildEmailLinkPayload(selectedJobId));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/emails"] });

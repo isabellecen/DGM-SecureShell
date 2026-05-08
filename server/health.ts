@@ -17,8 +17,22 @@ type HealthOptions = {
   schedulerEnabled: boolean;
 };
 
+type ReadyzDetails = {
+  ok: boolean;
+  database: unknown;
+  scheduler: unknown;
+};
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function readyzResponseBody(details: ReadyzDetails, nodeEnv = process.env.NODE_ENV) {
+  if (nodeEnv === "production") {
+    return { ok: details.ok };
+  }
+
+  return details;
 }
 
 async function databaseHealth() {
@@ -62,7 +76,7 @@ async function schedulerHealth(enabled: boolean) {
 
   return {
     enabled,
-    ok: staleWorkers.length === 0,
+    ok: staleWorkers.length === 0 && errorWorkers.length === 0,
     staleWorkers,
     errorWorkers,
   };
@@ -78,14 +92,15 @@ export function registerHealth(app: Express, options: HealthOptions) {
       const database = await databaseHealth();
       const scheduler = await schedulerHealth(options.schedulerEnabled);
       const ok = database.ok && scheduler.ok;
-
-      res.status(ok ? 200 : 503).json({
+      const details = {
         ok,
         database,
         scheduler,
-      });
+      };
+
+      res.status(ok ? 200 : 503).json(readyzResponseBody(details));
     } catch (err) {
-      res.status(503).json({
+      const details = {
         ok: false,
         database: {
           ok: false,
@@ -97,7 +112,13 @@ export function registerHealth(app: Express, options: HealthOptions) {
           staleWorkers: [],
           errorWorkers: [],
         },
-      });
+      };
+
+      res.status(503).json(readyzResponseBody(details));
     }
   });
 }
+
+export const healthInternals = {
+  readyzResponseBody,
+};

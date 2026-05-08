@@ -1,7 +1,6 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
 import react from "@vitejs/plugin-react";
-import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 import { rm, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -23,7 +22,7 @@ async function buildAll() {
   console.log("building client...");
   await viteBuild({
     configFile: false,
-    plugins: [react(), runtimeErrorOverlay()],
+    plugins: [react()],
     resolve: {
       preserveSymlinks: true,
       alias: {

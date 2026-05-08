@@ -319,11 +319,9 @@ export async function registerRoutes(
 
   app.get("/api/proxmox-hosts/:id", async (req, res) => {
     const id = parseId(req.params.id);
-    const host = await storage.getProxmoxHost(id);
+    const host = await storage.getProxmoxHostWithCustomer(id);
     if (!host) return res.status(404).json({ message: "Not found" });
-    const allHosts = await storage.getProxmoxHosts();
-    const withCustomer = allHosts.find(h => h.id === id);
-    res.json({ ...(withCustomer || host), password: "***" });
+    res.json({ ...host, password: "***" });
   });
 
   app.post("/api/proxmox-hosts", async (req, res) => {
@@ -384,11 +382,9 @@ export async function registerRoutes(
 
   app.get("/api/backup-targets/:id", async (req, res) => {
     const id = parseId(req.params.id);
-    const target = await storage.getBackupTarget(id);
+    const target = await storage.getBackupTargetWithCustomer(id);
     if (!target) return res.status(404).json({ message: "Not found" });
-    const allTargets = await storage.getBackupTargets();
-    const withCustomer = allTargets.find(t => t.id === id);
-    res.json({ ...(withCustomer || target), password: "***" });
+    res.json({ ...target, password: "***" });
   });
 
   app.post("/api/backup-targets", async (req, res) => {
@@ -424,8 +420,7 @@ export async function registerRoutes(
     const id = parseId(req.params.id);
     const target = await pollBackupTargetAndPersist(id);
     if (!target) return res.status(404).json({ message: "Not found" });
-    const allTargets = await storage.getBackupTargets();
-    const withCustomer = allTargets.find(t => t.id === id);
+    const withCustomer = await storage.getBackupTargetWithCustomer(id);
     res.json({ ...(withCustomer || target), password: "***" });
   });
 

@@ -11,6 +11,7 @@ import {
   Clock,
   Activity,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { Job, ProxmoxHost, Incident, ExpectedRun } from "@shared/schema";
 import { Link } from "wouter";
 import { format } from "date-fns";
@@ -36,7 +37,7 @@ function StatCard({
   title: string;
   value: string | number;
   description: string;
-  icon: any;
+  icon: LucideIcon;
   trend?: "up" | "down" | "neutral";
 }) {
   return (

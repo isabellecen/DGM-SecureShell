@@ -35,8 +35,11 @@ import {
   Trash2,
 } from "lucide-react";
 import type { BackupTarget, Customer } from "@shared/schema";
+import { parseBackupDatastores } from "@shared/monitoringPayloads";
 import { formatDistanceToNow } from "date-fns";
 import { useState } from "react";
+import { ConfirmActionButton } from "@/components/confirm-action";
+import { buildBackupTargetPayload } from "@/lib/workflow-payloads";
 
 type TargetWithCustomer = BackupTarget & { customerName?: string };
 
@@ -138,20 +141,18 @@ function TargetDialog({
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const payload: Record<string, any> = {
+      const payload = buildBackupTargetPayload({
         name,
         type,
         host,
-        port: parseInt(port) || (type === "PBS" ? 8007 : 5001),
+        port,
         username,
-        tlsFingerprint: tlsFingerprint || null,
+        password,
+        tlsFingerprint,
         allowInsecureTls,
-        customerId: customerId && customerId !== "none" ? parseInt(customerId) : null,
+        customerId,
         enabled,
-      };
-      if (password || !isEditing) {
-        payload.password = password;
-      }
+      }, isEditing);
       if (isEditing) {
         return apiRequest("PATCH", `/api/backup-targets/${target.id}`, payload);
       }
@@ -331,7 +332,7 @@ function TargetCard({
     },
   });
 
-  const datastores = (target.datastoresJson as any[]) || [];
+  const datastores = parseBackupDatastores(target.datastoresJson);
   const percent = getUsagePercent(target.usedBytes, target.totalBytes);
   const hasCapacity = target.totalBytes && target.usedBytes;
   const isError = target.pollStatus === "ERROR";
@@ -376,14 +377,17 @@ function TargetCard({
           >
             <Pencil className="h-3.5 w-3.5" />
           </Button>
-          <Button
+          <ConfirmActionButton
             size="icon"
             variant="ghost"
-            onClick={() => onDelete(target.id)}
+            title={`Remove ${target.name}?`}
+            description="Capacity data for this backup target will be removed and open monitor incidents will be resolved."
+            confirmLabel="Remove"
+            onConfirm={() => onDelete(target.id)}
             data-testid={`button-delete-target-${target.id}`}
           >
             <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+          </ConfirmActionButton>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -414,11 +418,11 @@ function TargetCard({
             <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               {target.type === "PBS" ? "Datastores" : "Volumes"}
             </div>
-            {datastores.map((ds: any, i: number) => (
+            {datastores.map((ds, i) => (
               <div key={i} className="pl-0" data-testid={`row-datastore-${target.id}-${i}`}>
                 <UsageBar
-                  used={ds.usedBytes || ds.used_bytes}
-                  total={ds.totalBytes || ds.total_bytes}
+                  used={ds.usedBytes ?? ds.used_bytes ?? null}
+                  total={ds.totalBytes ?? ds.total_bytes ?? null}
                   label={ds.name}
                   detail={
                     ds.snapshotCount != null
@@ -526,10 +530,7 @@ export default function BackupStorage() {
   };
 
   const handleDelete = (id: number) => {
-    const target = targets?.find((item) => item.id === id);
-    if (window.confirm(`Remove ${target?.name || "this backup target"} from monitoring?`)) {
-      deleteMutation.mutate(id);
-    }
+    deleteMutation.mutate(id);
   };
 
   const enabledTargets = targets?.filter((t) => t.enabled) || [];

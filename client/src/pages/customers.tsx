@@ -23,6 +23,7 @@ import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Customer } from "@shared/schema";
+import { ConfirmActionButton } from "@/components/confirm-action";
 
 function CustomerFormDialog({
   customer,
@@ -183,18 +184,17 @@ export default function Customers() {
                         >
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
-                        <Button
+                        <ConfirmActionButton
                           size="icon"
                           variant="ghost"
-                          onClick={() => {
-                            if (window.confirm(`Delete ${customer.name}? Related items will be kept but unassigned.`)) {
-                              deleteMutation.mutate(customer.id);
-                            }
-                          }}
+                          title={`Delete ${customer.name}?`}
+                          description="Related items will be kept but unassigned."
+                          confirmLabel="Delete"
+                          onConfirm={() => deleteMutation.mutate(customer.id)}
                           data-testid={`button-delete-customer-${customer.id}`}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        </ConfirmActionButton>
                       </div>
                     </TableCell>
                   </TableRow>

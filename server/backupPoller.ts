@@ -2,11 +2,12 @@
 import https from "https";
 import http from "http";
 import type { TLSSocket } from "tls";
+import type { BackupDatastore } from "@shared/monitoringPayloads";
 
 export type PollResult = {
   totalBytes: string | null;
   usedBytes: string | null;
-  datastoresJson: any[] | null;
+  datastoresJson: BackupDatastore[] | null;
   pollStatus: "OK" | "ERROR";
   pollError: string | null;
 };
@@ -59,7 +60,7 @@ async function pollSynology(input: TargetInput): Promise<PollResult> {
   try {
     // Step 2: Get volume info via SYNO.Core.System (works for non-admin users)
     // Try multiple APIs in order of accessibility
-    let volumes: any[] = [];
+    let volumes: BackupDatastore[] = [];
     let totalBytes = BigInt(0);
     let usedBytes = BigInt(0);
 
@@ -143,7 +144,7 @@ async function pollSynology(input: TargetInput): Promise<PollResult> {
 
         // Attach share counts to volumes by matching volume number
         for (const vol of volumes) {
-          const volNum = vol.name.match(/(\d+)/);
+          const volNum = (vol.name || "").match(/(\d+)/);
           if (volNum) {
             const volPath = `/volume${volNum[1]}`;
             if (shareCounts[volPath] !== undefined) {
@@ -153,7 +154,7 @@ async function pollSynology(input: TargetInput): Promise<PollResult> {
         }
 
         // If no match worked, assign total to first volume
-        const assigned = volumes.reduce((s: number, v: any) => s + (v.shareCount || 0), 0);
+        const assigned = volumes.reduce((sum, volume) => sum + (volume.shareCount || 0), 0);
         if (assigned === 0 && shareRes.data.shares.length > 0 && volumes.length > 0) {
           volumes[0].shareCount = shareRes.data.shares.length;
         }
@@ -233,7 +234,7 @@ async function pollPBS(input: TargetInput): Promise<PollResult> {
   }
 
   // Step 3: Get status for each datastore
-  const datastores: any[] = [];
+  const datastores: BackupDatastore[] = [];
   let totalBytes = BigInt(0);
   let usedBytes = BigInt(0);
 
@@ -371,8 +372,8 @@ export async function pollBackupTarget(input: TargetInput): Promise<PollResult> 
       return await pollPBS(input);
     }
     return { totalBytes: null, usedBytes: null, datastoresJson: null, pollStatus: "ERROR", pollError: `Unknown target type: ${input.type}` };
-  } catch (e: any) {
-    const msg = e?.message || "Unknown error";
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Unknown error";
     if (msg.includes("ECONNREFUSED")) return { totalBytes: null, usedBytes: null, datastoresJson: null, pollStatus: "ERROR", pollError: "Connection refused: host unreachable" };
     if (msg.includes("ETIMEDOUT") || msg.includes("abort")) return { totalBytes: null, usedBytes: null, datastoresJson: null, pollStatus: "ERROR", pollError: "Connection timed out" };
     if (msg.includes("TLS_FINGERPRINT_MISMATCH")) return { totalBytes: null, usedBytes: null, datastoresJson: null, pollStatus: "ERROR", pollError: "TLS certificate fingerprint mismatch" };
