@@ -34,14 +34,21 @@ function safeEqual(a: Buffer, b: Buffer): boolean {
   return crypto.timingSafeEqual(a, b);
 }
 
+const SCRYPT_HASH_BYTES = 64;
+
 function verifyScryptPassword(password: string, encoded: string): boolean {
-  const [, salt, hash] = encoded.split(":");
-  if (!salt || !hash) {
+  const parts = encoded.split(":");
+  if (parts.length !== 3) {
+    return false;
+  }
+
+  const [, salt, hash] = parts;
+  if (!salt || !new RegExp(`^[a-f0-9]{${SCRYPT_HASH_BYTES * 2}}$`, "i").test(hash)) {
     return false;
   }
 
   const expected = Buffer.from(hash, "hex");
-  const actual = crypto.scryptSync(password, salt, expected.length);
+  const actual = crypto.scryptSync(password, salt, SCRYPT_HASH_BYTES);
   return safeEqual(actual, expected);
 }
 
@@ -199,3 +206,7 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
 
   return res.status(401).json({ message: "Not authenticated" });
 }
+
+export const authInternals = {
+  verifyScryptPassword,
+};

@@ -225,7 +225,7 @@ export const backupTargets = pgTable("backup_targets", {
   name: text("name").notNull(),
   type: text("type").notNull(), // SYNOLOGY, PBS
   host: text("host").notNull(),
-  port: integer("port").notNull().default(443),
+  port: integer("port").notNull().default(5001),
   username: text("username").notNull(),
   password: text("password").notNull(),
   tlsFingerprint: text("tls_fingerprint"),

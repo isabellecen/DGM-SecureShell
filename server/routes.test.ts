@@ -40,3 +40,31 @@ test("notification route validation requires ids for scoped routes", () => {
     false,
   );
 });
+
+test("job patch validation rejects weekly jobs without selected days", () => {
+  assert.throws(
+    () => routeInternals.assertJobPatchScheduleValid(
+      { scheduleType: "daily", daysOfWeek: [] },
+      { scheduleType: "weekly" },
+    ),
+    /Select at least one weekday/,
+  );
+
+  assert.throws(
+    () => routeInternals.assertJobPatchScheduleValid(
+      { scheduleType: "weekly", daysOfWeek: ["monday"] },
+      { daysOfWeek: [] },
+    ),
+    /Select at least one weekday/,
+  );
+
+  assert.doesNotThrow(() => routeInternals.assertJobPatchScheduleValid(
+    { scheduleType: "daily", daysOfWeek: [] },
+    { scheduleType: "weekly", daysOfWeek: ["monday"] },
+  ));
+});
+
+test("backup target default ports match supported server types", () => {
+  assert.equal(routeInternals.defaultBackupTargetPort("PBS"), 8007);
+  assert.equal(routeInternals.defaultBackupTargetPort("SYNOLOGY"), 5001);
+});

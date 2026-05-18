@@ -117,94 +117,129 @@ async function persistParsedEmail(
   uid: number,
   parsed: ParsedEmail,
 ) {
-  const [inserted] = await db
-    .insert(emails)
-    .values({
-      folder,
-      uidvalidity,
-      uid,
-      messageId: parsed.messageId,
-      fromAddr: parsed.fromAddr,
-      subject: parsed.subject,
-      receivedAt: parsed.receivedAt,
-      snippet: parsed.snippet,
-      rawExcerpt: parsed.rawExcerpt,
-      ingestedOk: false,
-      matchedJobId: null,
-    })
-    .onConflictDoNothing({
-      target: [emails.folder, emails.uidvalidity, emails.uid],
-    })
-    .returning();
+  await db.transaction(async (tx) => {
+    const [inserted] = await tx
+      .insert(emails)
+      .values({
+        folder,
+        uidvalidity,
+        uid,
+        messageId: parsed.messageId,
+        fromAddr: parsed.fromAddr,
+        subject: parsed.subject,
+        receivedAt: parsed.receivedAt,
+        snippet: parsed.snippet,
+        rawExcerpt: parsed.rawExcerpt,
+        ingestedOk: false,
+        matchedJobId: null,
+      })
+      .onConflictDoNothing({
+        target: [emails.folder, emails.uidvalidity, emails.uid],
+      })
+      .returning();
 
-  if (!inserted) {
-    return;
-  }
+    const [email] = inserted
+      ? [inserted]
+      : await tx
+          .select()
+          .from(emails)
+          .where(
+            and(
+              eq(emails.folder, folder),
+              eq(emails.uidvalidity, uidvalidity),
+              eq(emails.uid, uid),
+            ),
+          )
+          .limit(1);
 
-  const rule = await findMatchingRule(parsed);
-  if (!rule) {
-    return;
-  }
+    if (!email) {
+      return;
+    }
 
-  const receivedAt = parsed.receivedAt || new Date();
-  const status = detectEventStatus(`${parsed.subject || ""}\n${parsed.snippet || ""}`);
-  const [run] = await db
-    .select()
-    .from(expectedRuns)
-    .where(
-      and(
-        eq(expectedRuns.jobId, rule.jobId),
-        eq(expectedRuns.status, "PENDING"),
-        lte(expectedRuns.scheduledFor, receivedAt),
-        gte(expectedRuns.deadlineAt, receivedAt),
-      ),
-    )
-    .orderBy(desc(expectedRuns.scheduledFor))
-    .limit(1);
-  const [job] = await db.select().from(jobs).where(eq(jobs.id, rule.jobId));
+    const rule = await findMatchingRule(parsed, tx);
+    if (!rule) {
+      return;
+    }
 
-  const [event] = await db
-    .insert(events)
-    .values({
+    const receivedAt = parsed.receivedAt || email.receivedAt || new Date();
+    const status = detectEventStatus(`${parsed.subject || ""}\n${parsed.snippet || ""}`);
+    const [existingEvent] = await tx.select().from(events).where(eq(events.emailId, email.id)).limit(1);
+    const [existingRun] = existingEvent?.expectedRunId
+      ? await tx.select().from(expectedRuns).where(eq(expectedRuns.id, existingEvent.expectedRunId)).limit(1)
+      : [];
+    const [pendingRun] = existingRun
+      ? []
+      : await tx
+          .select()
+          .from(expectedRuns)
+          .where(
+            and(
+              eq(expectedRuns.jobId, rule.jobId),
+              eq(expectedRuns.status, "PENDING"),
+              lte(expectedRuns.scheduledFor, receivedAt),
+              gte(expectedRuns.deadlineAt, receivedAt),
+            ),
+          )
+          .orderBy(desc(expectedRuns.scheduledFor))
+          .limit(1);
+    const run = existingRun || pendingRun;
+    const [job] = await tx.select().from(jobs).where(eq(jobs.id, rule.jobId));
+
+    const [event] = existingEvent
+      ? await tx
+          .update(events)
+          .set({
+            jobId: rule.jobId,
+            expectedRunId: run?.id ?? null,
+            status,
+            receivedAt,
+          })
+          .where(eq(events.id, existingEvent.id))
+          .returning()
+      : await tx
+          .insert(events)
+          .values({
+            jobId: rule.jobId,
+            expectedRunId: run?.id ?? null,
+            status,
+            receivedAt,
+            emailId: email.id,
+          })
+          .returning();
+
+    await tx
+      .update(emails)
+      .set({ matchedJobId: rule.jobId, ingestedOk: true })
+      .where(eq(emails.id, email.id));
+
+    if (run && status !== "UNKNOWN") {
+      await tx
+        .update(expectedRuns)
+        .set({ status, linkedEventId: event.id })
+        .where(eq(expectedRuns.id, run.id));
+    }
+
+    await syncBackupEmailIncident({
+      client: tx as unknown as Parameters<typeof syncBackupEmailIncident>[0]["client"],
       jobId: rule.jobId,
+      jobName: job?.name,
+      emailId: email.id,
       expectedRunId: run?.id ?? null,
       status,
       receivedAt,
-      emailId: inserted.id,
-    })
-    .returning();
-
-  await db
-    .update(emails)
-    .set({ matchedJobId: rule.jobId, ingestedOk: true })
-    .where(eq(emails.id, inserted.id));
-
-  if (run && status !== "UNKNOWN") {
-    await db
-      .update(expectedRuns)
-      .set({ status, linkedEventId: event.id })
-      .where(eq(expectedRuns.id, run.id));
-  }
-
-  await syncBackupEmailIncident({
-    jobId: rule.jobId,
-    jobName: job?.name,
-    emailId: inserted.id,
-    expectedRunId: run?.id ?? null,
-    status,
-    receivedAt,
-    subject: parsed.subject,
-    snippet: parsed.snippet,
+      subject: parsed.subject,
+      snippet: parsed.snippet,
+    });
   });
 }
 
-async function findMatchingRule(parsed: ParsedEmail) {
+async function findMatchingRule(parsed: ParsedEmail, client: Pick<typeof db, "select"> = db) {
   const haystack = {
     sender: (parsed.fromAddr || "").toLowerCase(),
     subject: (parsed.subject || "").toLowerCase(),
     body: (parsed.snippet || "").toLowerCase(),
   };
-  const rules = await db.select().from(jobRules).orderBy(desc(jobRules.priority));
+  const rules = await client.select().from(jobRules).orderBy(desc(jobRules.priority));
 
   return rules.find((rule) => {
     const checks = [

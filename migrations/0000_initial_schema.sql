@@ -25,7 +25,7 @@ CREATE TABLE "backup_targets" (
 	"name" text NOT NULL,
 	"type" text NOT NULL,
 	"host" text NOT NULL,
-	"port" integer DEFAULT 443 NOT NULL,
+	"port" integer DEFAULT 5001 NOT NULL,
 	"username" text NOT NULL,
 	"password" text NOT NULL,
 	"tls_fingerprint" text,

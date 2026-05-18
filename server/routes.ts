@@ -230,6 +230,21 @@ function badRequest(message: string): Error & { status: number } {
   return err;
 }
 
+function assertJobPatchScheduleValid(
+  existing: { scheduleType: string; daysOfWeek?: string[] | null },
+  data: { scheduleType?: string; daysOfWeek?: string[] | null },
+) {
+  const scheduleType = data.scheduleType ?? existing.scheduleType;
+  const daysOfWeek = data.daysOfWeek ?? existing.daysOfWeek ?? [];
+  if (scheduleType === "weekly" && daysOfWeek.length === 0) {
+    throw badRequest("Select at least one weekday for weekly jobs");
+  }
+}
+
+function defaultBackupTargetPort(type: z.infer<typeof backupTargetTypeSchema>): number {
+  return type === "PBS" ? 8007 : 5001;
+}
+
 function assertInsecureTargetAllowed(kind: "SSH host key" | "target TLS", allowInsecure?: boolean) {
   if (
     process.env.NODE_ENV === "production" &&
@@ -326,6 +341,9 @@ export async function registerRoutes(
   app.patch("/api/jobs/:id", async (req, res) => {
     const id = parseId(req.params.id);
     const data = jobPatchSchema.parse(req.body);
+    const existing = await storage.getJob(id);
+    if (!existing) return res.status(404).json({ message: "Not found" });
+    assertJobPatchScheduleValid(existing, data);
     const result = await storage.updateJob(id, data);
     if (!result) return res.status(404).json({ message: "Not found" });
     res.json(result);
@@ -427,7 +445,7 @@ export async function registerRoutes(
     await assertTargetHostAllowed(data.host);
     const result = await storage.createBackupTarget({
       ...data,
-      port: data.port || (data.type === "PBS" ? 8007 : 443),
+      port: data.port || defaultBackupTargetPort(data.type),
       customerId: data.customerId ?? null,
       tlsFingerprint: data.tlsFingerprint || null,
     });
@@ -678,4 +696,6 @@ export const routeInternals = {
   notificationRouteCreateSchema,
   settingSchema,
   assertRecipientsExist,
+  assertJobPatchScheduleValid,
+  defaultBackupTargetPort,
 };
