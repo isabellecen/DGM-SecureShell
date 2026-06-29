@@ -3,7 +3,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
-import { seedDatabase } from "./seed";
+import { runSeedOnBootIfEnabled } from "./seed";
 import { registerAuth } from "./auth";
 import { registerAudit } from "./audit";
 import { enforceInsecureTargetPolicy, registerSecurity } from "./security";
@@ -92,11 +92,9 @@ app.use((req, res, next) => {
   const schedulerEnabled =
     databaseReady && process.env.NODE_ENV !== "test" && process.env.DISABLE_SCHEDULER !== "1";
 
-  if (databaseReady && process.env.SEED_ON_BOOT === "1") {
-    await seedDatabase().catch((err) => {
-      console.error("Seed error (non-fatal):", err.message);
-    });
-  }
+  await runSeedOnBootIfEnabled(databaseReady).catch((err) => {
+    console.error("Seed error (non-fatal):", err.message);
+  });
 
   registerHealth(app, { schedulerEnabled });
   registerAuth(app);

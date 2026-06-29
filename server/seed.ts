@@ -1,25 +1,127 @@
-import { db } from "./db";
+import { db as appDb } from "./db";
 import {
-  customers,
-  jobs,
-  proxmoxHosts,
-  proxmoxChecks,
-  backupTargets,
-  incidents,
-  recipients,
-  expectedRuns,
-  emails,
   appSettings,
+  auditLogs,
+  backupTargets,
+  customers,
+  emailIngestionFailures,
+  emails,
+  events,
+  expectedRuns,
+  imapCheckpoints,
+  incidents,
+  jobRules,
+  jobs,
+  notificationRoutes,
+  proxmoxChecks,
+  proxmoxHosts,
+  rateLimitHits,
+  recipients,
+  schedulerRuns,
 } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
+import type { AnyPgTable } from "drizzle-orm/pg-core";
 import { encryptSecret } from "./crypto";
 
-export async function seedDatabase() {
-  const existingCustomers = await db.select().from(customers);
-  if (existingCustomers.length > 0) {
-    return;
+type SeedClient = Pick<typeof appDb, "execute" | "insert" | "select">;
+
+type SeedBootEnv = {
+  [key: string]: string | undefined;
+  SEED_ON_BOOT?: string;
+};
+
+type SeedBlockerTable = {
+  name: string;
+  table: AnyPgTable;
+};
+
+export type SeedDatabaseResult =
+  | { status: "seeded" }
+  | { status: "skipped"; reason: "database-not-empty"; blockerTables: string[] };
+
+const seedAdvisoryLockClassId = 550395112;
+const seedAdvisoryLockObjectId = 1441527051;
+
+const seedBlockerTables: SeedBlockerTable[] = [
+  { name: "app_settings", table: appSettings },
+  { name: "audit_logs", table: auditLogs },
+  { name: "backup_targets", table: backupTargets },
+  { name: "customers", table: customers },
+  { name: "email_ingestion_failures", table: emailIngestionFailures },
+  { name: "emails", table: emails },
+  { name: "events", table: events },
+  { name: "expected_runs", table: expectedRuns },
+  { name: "imap_checkpoints", table: imapCheckpoints },
+  { name: "incidents", table: incidents },
+  { name: "job_rules", table: jobRules },
+  { name: "jobs", table: jobs },
+  { name: "notification_routes", table: notificationRoutes },
+  { name: "proxmox_checks", table: proxmoxChecks },
+  { name: "proxmox_hosts", table: proxmoxHosts },
+  { name: "rate_limit_hits", table: rateLimitHits },
+  { name: "recipients", table: recipients },
+  { name: "scheduler_runs", table: schedulerRuns },
+];
+
+function isSeedOnBootEnabled(env: SeedBootEnv = process.env): boolean {
+  return env.SEED_ON_BOOT === "1";
+}
+
+export function shouldSeedOnBoot(
+  databaseReady: boolean,
+  env: SeedBootEnv = process.env,
+): boolean {
+  return databaseReady && isSeedOnBootEnabled(env);
+}
+
+export async function runSeedOnBootIfEnabled(
+  databaseReady: boolean,
+  seedFn: () => Promise<unknown> = seedDatabase,
+  env: SeedBootEnv = process.env,
+): Promise<boolean> {
+  if (!shouldSeedOnBoot(databaseReady, env)) {
+    return false;
   }
 
+  await seedFn();
+  return true;
+}
+
+async function acquireSeedAdvisoryLock(db: SeedClient): Promise<void> {
+  await db.execute(sql`select pg_advisory_xact_lock(${seedAdvisoryLockClassId}, ${seedAdvisoryLockObjectId})`);
+}
+
+async function findSeedBlockerTables(db: SeedClient): Promise<string[]> {
+  const blockers: string[] = [];
+
+  for (const blocker of seedBlockerTables) {
+    const rows = await db.select().from(blocker.table).limit(1);
+    if (rows.length > 0) {
+      blockers.push(blocker.name);
+    }
+  }
+
+  return blockers;
+}
+
+async function seedDatabaseWithClient(db: SeedClient): Promise<SeedDatabaseResult> {
+  await acquireSeedAdvisoryLock(db);
+
+  const blockerTables = await findSeedBlockerTables(db);
+  if (blockerTables.length > 0) {
+    console.log(`Skipping sample data seed: database is not empty (${blockerTables.join(", ")}).`);
+    return { status: "skipped", reason: "database-not-empty", blockerTables };
+  }
+
+  await insertSampleData(db);
+  return { status: "seeded" };
+}
+
+export async function seedDatabase(): Promise<SeedDatabaseResult> {
+  return appDb.transaction(async (tx) => seedDatabaseWithClient(tx as unknown as SeedClient));
+}
+
+async function insertSampleData(db: SeedClient): Promise<void> {
   console.log("Seeding database with sample data...");
 
   const [c1] = await db.insert(customers).values({ name: "Meridian Healthcare" }).returning();
@@ -582,3 +684,12 @@ export async function seedDatabase() {
 
   console.log("Database seeded successfully");
 }
+
+export const seedInternals = {
+  findSeedBlockerTables,
+  isSeedOnBootEnabled,
+  runSeedOnBootIfEnabled,
+  seedBlockerTables,
+  seedDatabaseWithClient,
+  shouldSeedOnBoot,
+};

@@ -81,7 +81,7 @@ npm.cmd run dev
 http://localhost:5000
 ```
 
-Development mode seeds sample data automatically when the database has no customers. Production does not seed unless `SEED_ON_BOOT=1`.
+Sample data is never seeded automatically by development mode. Set `SEED_ON_BOOT=1` to seed demo data on boot; the seeder only runs when every app table is empty.
 
 ## Production Deployment
 
@@ -252,7 +252,7 @@ Secret-like setting keys ending in `PASS`, `PASSWORD`, `SECRET`, `TOKEN`, `PRIVA
 | `PORT` | `5000` | No | Yes | HTTP port used by the Node process. |
 | `APP_TIMEZONE` | `UTC` fallback | Recommended | Scheduler reads DB/env during run | Default timezone for expected backup run calculations and daily reports. Can be overridden by Settings `APP_TIMEZONE`. Use an IANA name such as `America/Phoenix`; invalid values fall back to `UTC`. |
 | `DATABASE_URL` | none | Yes | Yes | PostgreSQL connection string. The app will not boot without it. |
-| `SEED_ON_BOOT` | `0` in production | No | Yes | When `1`, seeds demo data if the database has no customers. Development mode also seeds automatically. |
+| `SEED_ON_BOOT` | `0` | No | Yes | When exactly `1`, seeds demo data on boot only if every app table is empty. Development mode does not auto-seed. |
 | `DISABLE_SCHEDULER` | `0` | No | Yes | When `1`, disables all background workers. Useful for migrations, maintenance, or running a second web-only instance. |
 
 ### Sessions And Admin Login

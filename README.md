@@ -27,7 +27,7 @@ The application is built to help technical teams spot missed backups, unmatched 
 - Scheduler status, audit history, and retention cleanup controls
 - Health and readiness endpoints for process/database/scheduler monitoring
 - Dark/light theme support
-- Demo seed data in development
+- Opt-in demo seed data for empty databases
 
 ## Tech Stack
 
@@ -88,7 +88,7 @@ npm run dev
 
 The app serves both the API and the frontend on `http://localhost:5000` by default.
 
-Development mode seeds sample data automatically when the database has no customers. In production, seed data only runs when `SEED_ON_BOOT=1`.
+Sample data is never seeded automatically by development mode. Set `SEED_ON_BOOT=1` to seed demo data on boot; the seeder only runs when every app table is empty.
 
 ## Windows Note
 
@@ -141,7 +141,7 @@ Environment variables:
 | `TRUST_PROXY` | Set to `1` when deployed behind a trusted proxy |
 | `COOKIE_SECURE` | Set to `1` to force secure cookies |
 | `SECRET_ENCRYPTION_KEY` | Stable key used to encrypt stored target credentials and secret settings |
-| `SEED_ON_BOOT` | Set to `1` to seed demo data on boot when the database is empty |
+| `SEED_ON_BOOT` | Set to exact `1` to seed demo data on boot only when every app table is empty |
 | `DISABLE_SCHEDULER` | Set to `1` to disable background polling and expected-run evaluation |
 | `PROXMOX_POLL_INTERVAL_MINUTES` | Proxmox health polling interval, default `5` |
 | `BACKUP_TARGET_POLL_INTERVAL_MINUTES` | Backup target capacity polling interval, default `30` |
