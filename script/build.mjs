@@ -1,6 +1,6 @@
 import { build as viteBuild } from "vite";
 import react from "@vitejs/plugin-react";
-import { rm } from "node:fs/promises";
+import { copyFile, rm } from "node:fs/promises";
 import path from "node:path";
 
 const bundledServerDeps = [
@@ -68,6 +68,11 @@ async function buildAll() {
       },
     },
   });
+
+  await copyFile(
+    path.resolve("node_modules", "connect-pg-simple", "table.sql"),
+    path.resolve("dist", "table.sql"),
+  );
 }
 
 buildAll().catch((err) => {
