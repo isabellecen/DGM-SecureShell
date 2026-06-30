@@ -42,6 +42,7 @@ import {
   Activity,
   History,
   RefreshCw,
+  Webhook,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
@@ -587,6 +588,27 @@ export default function Settings() {
     saveMutation.mutate({ key, value });
   };
 
+  const proxmoxWebhookUrl =
+    typeof window === "undefined"
+      ? "/api/integrations/proxmox/notifications"
+      : `${window.location.origin}/api/integrations/proxmox/notifications`;
+  const pveWebhookBodyTemplate = `{
+  "source": "PVE",
+  "severity": "{{ severity }}",
+  "timestamp": "{{ timestamp }}",
+  "title": "{{ title }}",
+  "message": "{{ message }}",
+  "fields": {{ json fields }}
+}`;
+  const pbsWebhookBodyTemplate = `{
+  "source": "PBS",
+  "severity": "{{ severity }}",
+  "timestamp": "{{ timestamp }}",
+  "title": "{{ title }}",
+  "message": "{{ message }}",
+  "fields": {{ json fields }}
+}`;
+
   if (settingsLoading) {
     return (
       <div className="p-6">
@@ -620,6 +642,10 @@ export default function Settings() {
           <TabsTrigger value="smtp" data-testid="tab-smtp">
             <Send className="h-3.5 w-3.5 mr-1.5" />
             SMTP
+          </TabsTrigger>
+          <TabsTrigger value="integrations" data-testid="tab-integrations">
+            <Webhook className="h-3.5 w-3.5 mr-1.5" />
+            Integrations
           </TabsTrigger>
           <TabsTrigger value="recipients" data-testid="tab-recipients">
             <Bell className="h-3.5 w-3.5 mr-1.5" />
@@ -756,6 +782,55 @@ export default function Settings() {
                 settings={settings}
                 onSave={handleSaveSetting}
               />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="integrations">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Proxmox Webhook</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <SettingField
+                label="Webhook Secret"
+                description="Shared secret accepted by the Proxmox notification webhook endpoint."
+                settingKey="PROXMOX_WEBHOOK_SECRET"
+                type="password"
+                clearableSecret
+                secretHasValue={secretState.PROXMOX_WEBHOOK_SECRET}
+                settings={settings}
+                onSave={handleSaveSetting}
+              />
+              <div className="space-y-1.5">
+                <Label>Endpoint URL</Label>
+                <div
+                  className="rounded-md border bg-muted px-3 py-2 font-mono text-xs break-all"
+                  data-testid="text-proxmox-webhook-url"
+                >
+                  {proxmoxWebhookUrl}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Header</Label>
+                <pre className="overflow-x-auto rounded-md border bg-muted p-3 text-xs">
+                  Authorization: Bearer {"<secret>"}
+                </pre>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label>PVE Body</Label>
+                  <pre className="max-h-72 overflow-auto rounded-md border bg-muted p-3 text-xs">
+                    {pveWebhookBodyTemplate}
+                  </pre>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>PBS Body</Label>
+                  <pre className="max-h-72 overflow-auto rounded-md border bg-muted p-3 text-xs">
+                    {pbsWebhookBodyTemplate}
+                  </pre>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

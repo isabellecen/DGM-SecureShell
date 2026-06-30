@@ -35,14 +35,19 @@ export const jobs = pgTable("jobs", {
   windowHours: integer("window_hours").notNull().default(6),
   longRunning: boolean("long_running").notNull().default(false),
   longWindowHours: integer("long_window_hours").default(24),
+  webhookSource: text("webhook_source"), // PVE, PBS
+  webhookJobId: text("webhook_job_id"),
+  webhookHost: text("webhook_host"),
   enabled: boolean("enabled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   check("jobs_system_type_check", sql`${table.systemType} IN ('VEEAM', 'PBS', 'SYNOLOGY')`),
   check("jobs_schedule_type_check", sql`${table.scheduleType} IN ('daily', 'weekly')`),
   check("jobs_schedule_time_check", sql`${table.scheduleTime} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'`),
+  check("jobs_webhook_source_check", sql`${table.webhookSource} IS NULL OR ${table.webhookSource} IN ('PVE', 'PBS')`),
   index("jobs_customer_id_idx").on(table.customerId),
   index("jobs_enabled_idx").on(table.enabled),
+  index("jobs_webhook_lookup_idx").on(table.webhookSource, table.webhookJobId, table.webhookHost),
 ]);
 
 export const insertJobSchema = createInsertSchema(jobs).omit({ id: true, createdAt: true });
@@ -134,8 +139,13 @@ export const events = pgTable("events", {
   status: text("status").notNull(), // OK, WARN, FAIL, UNKNOWN
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
   emailId: integer("email_id").references(() => emails.id),
+  sourceType: text("source_type").notNull().default("EMAIL"), // EMAIL, PROXMOX_WEBHOOK
+  sourceFingerprint: text("source_fingerprint"),
+  payloadJson: jsonb("payload_json"),
 }, (table) => [
   check("events_status_check", sql`${table.status} IN ('OK', 'WARN', 'FAIL', 'UNKNOWN')`),
+  check("events_source_type_check", sql`${table.sourceType} IN ('EMAIL', 'PROXMOX_WEBHOOK')`),
+  uniqueIndex("events_source_fingerprint_idx").on(table.sourceFingerprint),
   index("events_job_received_idx").on(table.jobId, table.receivedAt),
   index("events_expected_run_id_idx").on(table.expectedRunId),
 ]);

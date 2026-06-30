@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, sql, and, count, lt, ne, gte, lte } from "drizzle-orm";
+import { eq, desc, sql, and, count, lt, ne, gte, lte, inArray } from "drizzle-orm";
 import {
   customers, insertCustomerSchema, type Customer, type InsertCustomer,
   jobs, type Job, type InsertJob,
@@ -21,8 +21,9 @@ import {
 } from "@shared/schema";
 import { CLEAR_SECRET_SETTING_VALUE } from "@shared/settings";
 import { decryptSecret, encryptSecret, isSecretSettingKey } from "./crypto";
-import { detectEventStatus } from "./emailStatus";
-import { backupEmailIncidentFingerprint, syncBackupEmailIncident } from "./backupIncidents";
+import { detectEventStatus, type EmailEventStatus } from "./emailStatus";
+import { backupEmailIncidentFingerprint, syncBackupEmailIncident, syncBackupWebhookIncident } from "./backupIncidents";
+import type { NormalizedProxmoxWebhookEvent } from "./proxmoxWebhook";
 
 type WithCustomerName = { customerName?: string | null };
 type WithJobName = { jobName?: string | null };
@@ -36,6 +37,17 @@ export type PaginatedResult<T> = {
   limit: number;
   offset: number;
 };
+
+export type ProxmoxWebhookIngestResult =
+  | {
+      status: "processed";
+      jobId: number;
+      eventId: number;
+      expectedRunId: number | null;
+      eventStatus: EmailEventStatus;
+      duplicate: boolean;
+    }
+  | { status: "ignored"; reason: string };
 
 export interface IStorage {
   getCustomers(): Promise<Customer[]>;
@@ -91,6 +103,7 @@ export interface IStorage {
   getUnmatchedEmailCount(): Promise<number>;
   getEmailIngestionFailures(limit?: number, offset?: number): Promise<PaginatedResult<EmailIngestionFailure>>;
   getEvents(limit?: number): Promise<(Event & WithJobName)[]>;
+  ingestProxmoxWebhookEvent(event: NormalizedProxmoxWebhookEvent): Promise<ProxmoxWebhookIngestResult>;
 
   getProxmoxChecks(hostId: number, limit?: number): Promise<ProxmoxCheck[]>;
   createProxmoxCheck(data: InsertProxmoxCheck): Promise<ProxmoxCheck>;
@@ -155,6 +168,53 @@ type BackupTargetUpdate = Partial<InsertBackupTarget> & {
 };
 
 const prunedRecipient = Symbol("prunedRecipient");
+
+type WebhookJobCandidate = Pick<Job, "id" | "webhookHost">;
+
+function normalizedOptional(value: string | null | undefined): string | null {
+  const trimmed = value?.trim().toLowerCase();
+  return trimmed || null;
+}
+
+function selectWebhookJobMatch<T extends WebhookJobCandidate>(
+  candidates: T[],
+  incomingHost: string | null,
+): { status: "matched"; job: T } | { status: "ignored"; reason: string } {
+  const host = normalizedOptional(incomingHost);
+  const unscopedMatches = candidates.filter((job) => normalizedOptional(job.webhookHost) == null);
+
+  if (candidates.length === 0) {
+    return { status: "ignored", reason: "no matching backup job webhook mapping" };
+  }
+
+  if (host) {
+    const exactHostMatches = candidates.filter((job) => normalizedOptional(job.webhookHost) === host);
+    if (exactHostMatches.length === 1) {
+      return { status: "matched", job: exactHostMatches[0] };
+    }
+    if (exactHostMatches.length > 1) {
+      return { status: "ignored", reason: "multiple jobs matched source, job-id, and host" };
+    }
+
+    if (candidates.length === 1 && unscopedMatches.length === 1) {
+      return { status: "matched", job: unscopedMatches[0] };
+    }
+
+    return candidates.length > 1
+      ? { status: "ignored", reason: "multiple jobs matched source and job-id; host did not disambiguate" }
+      : { status: "ignored", reason: "webhook host did not match configured job host" };
+  }
+
+  if (candidates.length === 1 && unscopedMatches.length === 1) {
+    return { status: "matched", job: unscopedMatches[0] };
+  }
+
+  if (candidates.length > 1) {
+    return { status: "ignored", reason: "multiple jobs matched source and job-id without a host" };
+  }
+
+  return { status: "ignored", reason: "webhook host is required for host-scoped job mapping" };
+}
 
 function pruneRecipientFromRoutePayload(value: unknown, recipientId: number): unknown | typeof prunedRecipient {
   if (typeof value === "number") {
@@ -386,6 +446,9 @@ export class DatabaseStorage implements IStorage {
         windowHours: jobs.windowHours,
         longRunning: jobs.longRunning,
         longWindowHours: jobs.longWindowHours,
+        webhookSource: jobs.webhookSource,
+        webhookJobId: jobs.webhookJobId,
+        webhookHost: jobs.webhookHost,
         enabled: jobs.enabled,
         createdAt: jobs.createdAt,
         customerName: customers.name,
@@ -798,6 +861,9 @@ export class DatabaseStorage implements IStorage {
         status: events.status,
         receivedAt: events.receivedAt,
         emailId: events.emailId,
+        sourceType: events.sourceType,
+        sourceFingerprint: events.sourceFingerprint,
+        payloadJson: events.payloadJson,
         jobName: jobs.name,
       })
       .from(events)
@@ -805,6 +871,135 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(events.receivedAt))
       .limit(limit);
     return result;
+  }
+
+  async ingestProxmoxWebhookEvent(input: NormalizedProxmoxWebhookEvent): Promise<ProxmoxWebhookIngestResult> {
+    return db.transaction(async (tx) => {
+      const [existingEvent] = await tx
+        .select()
+        .from(events)
+        .where(eq(events.sourceFingerprint, input.fingerprint))
+        .limit(1);
+      if (existingEvent) {
+        return {
+          status: "processed",
+          jobId: existingEvent.jobId,
+          eventId: existingEvent.id,
+          expectedRunId: existingEvent.expectedRunId ?? null,
+          eventStatus: existingEvent.status as EmailEventStatus,
+          duplicate: true,
+        };
+      }
+
+      const candidates = await tx
+        .select()
+        .from(jobs)
+        .where(and(eq(jobs.webhookSource, input.source), eq(jobs.webhookJobId, input.jobId)));
+      const match = selectWebhookJobMatch(candidates, input.host);
+      if (match.status === "ignored") {
+        return match;
+      }
+
+      const job = match.job;
+      let [run] = await tx
+        .select()
+        .from(expectedRuns)
+        .where(
+          and(
+            eq(expectedRuns.jobId, job.id),
+            eq(expectedRuns.status, "PENDING"),
+            lte(expectedRuns.scheduledFor, input.receivedAt),
+            gte(expectedRuns.deadlineAt, input.receivedAt),
+          ),
+        )
+        .orderBy(desc(expectedRuns.scheduledFor))
+        .limit(1);
+
+      if (!run && input.status === "OK") {
+        [run] = await tx
+          .select()
+          .from(expectedRuns)
+          .where(
+            and(
+              eq(expectedRuns.jobId, job.id),
+              inArray(expectedRuns.status, ["FAIL", "WARN"]),
+              lte(expectedRuns.scheduledFor, input.receivedAt),
+              gte(expectedRuns.deadlineAt, input.receivedAt),
+            ),
+          )
+          .orderBy(desc(expectedRuns.scheduledFor))
+          .limit(1);
+      }
+
+      const [insertedEvent] = await tx
+        .insert(events)
+        .values({
+          jobId: job.id,
+          expectedRunId: run?.id ?? null,
+          status: input.status,
+          receivedAt: input.receivedAt,
+          emailId: null,
+          sourceType: "PROXMOX_WEBHOOK",
+          sourceFingerprint: input.fingerprint,
+          payloadJson: input.payload,
+        })
+        .onConflictDoNothing({
+          target: events.sourceFingerprint,
+        })
+        .returning();
+      if (!insertedEvent) {
+        const [conflictingEvent] = await tx
+          .select()
+          .from(events)
+          .where(eq(events.sourceFingerprint, input.fingerprint))
+          .limit(1);
+        if (!conflictingEvent) {
+          throw new Error("Webhook event conflict could not be loaded");
+        }
+        return {
+          status: "processed",
+          jobId: conflictingEvent.jobId,
+          eventId: conflictingEvent.id,
+          expectedRunId: conflictingEvent.expectedRunId ?? null,
+          eventStatus: conflictingEvent.status as EmailEventStatus,
+          duplicate: true,
+        };
+      }
+
+      const event = insertedEvent;
+
+      if (run && input.status !== "UNKNOWN") {
+        await tx
+          .update(expectedRuns)
+          .set({ status: input.status, linkedEventId: event.id })
+          .where(eq(expectedRuns.id, run.id));
+      }
+
+      await syncBackupWebhookIncident({
+        client: tx as unknown as Parameters<typeof syncBackupWebhookIncident>[0]["client"],
+        jobId: job.id,
+        jobName: job.name,
+        source: input.source,
+        eventType: input.eventType,
+        webhookJobId: input.jobId,
+        host: input.host,
+        sourceFingerprint: input.fingerprint,
+        expectedRunId: run?.id ?? null,
+        status: input.status,
+        receivedAt: input.receivedAt,
+        title: input.title,
+        message: input.message,
+      });
+
+      return {
+        status: "processed",
+        jobId: job.id,
+        eventId: event.id,
+        expectedRunId: run?.id ?? null,
+        eventStatus: input.status,
+        duplicate: false,
+      };
+    });
   }
 
   async getProxmoxChecks(hostId: number, limit = 20): Promise<ProxmoxCheck[]> {
@@ -1040,4 +1235,5 @@ export const storageInternals = {
   pruneRecipientFromRoutePayload,
   routePayloadHasRecipients,
   shouldPruneRecipientRoutesForUpdate,
+  selectWebhookJobMatch,
 };

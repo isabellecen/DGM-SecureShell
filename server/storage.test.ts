@@ -30,3 +30,64 @@ test("recipient route payload cleanup runs when recipients are disabled", () => 
   assert.equal(storageInternals.shouldPruneRecipientRoutesForUpdate({ enabled: true }), false);
   assert.equal(storageInternals.shouldPruneRecipientRoutesForUpdate({ name: "Ops" }), false);
 });
+
+test("webhook job matching prefers exact host matches", () => {
+  const result = storageInternals.selectWebhookJobMatch(
+    [
+      { id: 1, webhookHost: null },
+      { id: 2, webhookHost: "pve1" },
+    ],
+    "PVE1",
+  );
+
+  assert.equal(result.status, "matched");
+  if (result.status === "matched") {
+    assert.equal(result.job.id, 2);
+  }
+});
+
+test("webhook job matching accepts exactly one unscoped job", () => {
+  const single = storageInternals.selectWebhookJobMatch([{ id: 1, webhookHost: null }], "pve1");
+  assert.equal(single.status, "matched");
+  if (single.status === "matched") {
+    assert.equal(single.job.id, 1);
+  }
+});
+
+test("webhook job matching rejects scoped mappings without a matching host", () => {
+  assert.equal(
+    storageInternals.selectWebhookJobMatch([{ id: 1, webhookHost: "pve1" }], null).status,
+    "ignored",
+  );
+
+  assert.equal(
+    storageInternals.selectWebhookJobMatch([{ id: 1, webhookHost: "pve1" }], "pve2").status,
+    "ignored",
+  );
+});
+
+test("webhook job matching rejects ambiguous source and job-id mappings", () => {
+  const ambiguous = storageInternals.selectWebhookJobMatch(
+    [
+      { id: 1, webhookHost: null },
+      { id: 2, webhookHost: "" },
+    ],
+    null,
+  );
+
+  assert.deepEqual(ambiguous, {
+    status: "ignored",
+    reason: "multiple jobs matched source and job-id without a host",
+  });
+
+  assert.equal(
+    storageInternals.selectWebhookJobMatch(
+      [
+        { id: 1, webhookHost: null },
+        { id: 2, webhookHost: "pve1" },
+      ],
+      "pve2",
+    ).status,
+    "ignored",
+  );
+});

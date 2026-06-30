@@ -99,6 +99,9 @@ function JobFormDialog({
   const [enabled, setEnabled] = useState(job?.enabled ?? true);
   const [longRunning, setLongRunning] = useState(job?.longRunning ?? false);
   const [daysOfWeek, setDaysOfWeek] = useState<string[]>(job?.daysOfWeek || []);
+  const [webhookSource, setWebhookSource] = useState(job?.webhookSource || "none");
+  const [webhookJobId, setWebhookJobId] = useState(job?.webhookJobId || "");
+  const [webhookHost, setWebhookHost] = useState(job?.webhookHost || "");
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -113,6 +116,9 @@ function JobFormDialog({
         longRunning,
         longWindowHours,
         daysOfWeek,
+        webhookSource,
+        webhookJobId,
+        webhookHost,
       });
       if (isEditing) {
         return apiRequest("PATCH", `/api/jobs/${job.id}`, payload);
@@ -256,6 +262,54 @@ function JobFormDialog({
               />
             </div>
           )}
+          <div className="space-y-3 rounded-md border p-3">
+            <div>
+              <Label>Proxmox Webhook</Label>
+              <Select
+                value={webhookSource}
+                onValueChange={(value) => {
+                  setWebhookSource(value);
+                  if (value === "none") {
+                    setWebhookJobId("");
+                    setWebhookHost("");
+                  }
+                }}
+              >
+                <SelectTrigger data-testid="select-webhook-source">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No webhook</SelectItem>
+                  <SelectItem value="PVE">Proxmox VE</SelectItem>
+                  <SelectItem value="PBS">Proxmox Backup Server</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label htmlFor="webhook-job-id">Job ID</Label>
+                <Input
+                  id="webhook-job-id"
+                  value={webhookJobId}
+                  onChange={(e) => setWebhookJobId(e.target.value)}
+                  disabled={webhookSource === "none"}
+                  placeholder="backup-123"
+                  data-testid="input-webhook-job-id"
+                />
+              </div>
+              <div>
+                <Label htmlFor="webhook-host">Host</Label>
+                <Input
+                  id="webhook-host"
+                  value={webhookHost}
+                  onChange={(e) => setWebhookHost(e.target.value)}
+                  disabled={webhookSource === "none"}
+                  placeholder="pve1"
+                  data-testid="input-webhook-host"
+                />
+              </div>
+            </div>
+          </div>
           <div className="flex items-center justify-between gap-2">
             <Label htmlFor="enabled">Enabled</Label>
             <Switch
@@ -268,7 +322,12 @@ function JobFormDialog({
           <Button
             className="w-full"
             onClick={() => mutation.mutate()}
-            disabled={!name || (scheduleType === "weekly" && daysOfWeek.length === 0) || mutation.isPending}
+            disabled={
+              !name ||
+              (scheduleType === "weekly" && daysOfWeek.length === 0) ||
+              (webhookSource !== "none" && !webhookJobId.trim()) ||
+              mutation.isPending
+            }
             data-testid="button-save-job"
           >
             {mutation.isPending ? "Saving..." : isEditing ? "Update Job" : "Create Job"}

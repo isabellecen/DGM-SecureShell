@@ -209,4 +209,261 @@ if (!runIntegrationTests) {
       await db.delete(appSettings).where(eq(appSettings.key, key));
     }
   });
+
+  test("Proxmox webhook ingestion links runs and syncs backup incidents", async () => {
+    const { db } = await import("./db");
+    const { storage } = await import("./storage");
+    const { backupWebhookIncidentFingerprint } = await import("./backupIncidents");
+    const { proxmoxWebhookFingerprint } = await import("./proxmoxWebhook");
+
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const receivedAt = new Date("2026-06-30T10:30:00.000Z");
+    const okReceivedAt = new Date("2026-06-30T11:00:00.000Z");
+    const outsideWindowOkReceivedAt = new Date("2026-06-30T18:00:00.000Z");
+    const scheduledFor = new Date("2026-06-30T10:00:00.000Z");
+    const deadlineAt = new Date("2026-06-30T14:00:00.000Z");
+    const oldScheduledFor = new Date("2026-06-30T01:00:00.000Z");
+    const oldDeadlineAt = new Date("2026-06-30T02:00:00.000Z");
+
+    const createdJobIds: number[] = [];
+    const createdRunIds: number[] = [];
+    const createdEventIds: number[] = [];
+    const createdIncidentFingerprints: string[] = [];
+    let createdCustomerId: number | undefined;
+
+    try {
+      const [customer] = await db.insert(customers).values({ name: `webhook-test-${suffix}` }).returning();
+      createdCustomerId = customer.id;
+
+      const [job] = await db
+        .insert(jobs)
+        .values({
+          customerId: customer.id,
+          name: `webhook-job-${suffix}`,
+          systemType: "PBS",
+          scheduleType: "daily",
+          scheduleTime: "10:00",
+          windowHours: 4,
+          webhookSource: "PVE",
+          webhookJobId: `backup-${suffix}`,
+          webhookHost: "pve1",
+        })
+        .returning();
+      createdJobIds.push(job.id);
+
+      const [run] = await db
+        .insert(expectedRuns)
+        .values({
+          jobId: job.id,
+          scheduledFor,
+          deadlineAt,
+          status: "PENDING",
+        })
+        .returning();
+      createdRunIds.push(run.id);
+
+      const [oldRun] = await db
+        .insert(expectedRuns)
+        .values({
+          jobId: job.id,
+          scheduledFor: oldScheduledFor,
+          deadlineAt: oldDeadlineAt,
+          status: "FAIL",
+        })
+        .returning();
+      createdRunIds.push(oldRun.id);
+
+      const webhookIdentity = {
+        source: "PVE",
+        eventType: "vzdump",
+        webhookJobId: `backup-${suffix}`,
+        host: "pve1",
+      };
+
+      const sourceFingerprint = proxmoxWebhookFingerprint({
+        source: "PVE",
+        eventType: "vzdump",
+        jobId: `backup-${suffix}`,
+        host: "pve1",
+        timestamp: receivedAt,
+        severity: "error",
+      });
+      createdIncidentFingerprints.push(backupWebhookIncidentFingerprint({
+        ...webhookIdentity,
+        expectedRunId: run.id,
+      }));
+      const oldRunIncidentFingerprint = backupWebhookIncidentFingerprint({
+        ...webhookIdentity,
+        expectedRunId: oldRun.id,
+      });
+      createdIncidentFingerprints.push(oldRunIncidentFingerprint);
+      await db.insert(incidents).values({
+        sourceType: "BACKUP",
+        sourceId: job.id,
+        severity: "CRIT",
+        title: "Old run reported failure",
+        details: "Created by storage integration test.",
+        state: "OPEN",
+        sourceFingerprint: oldRunIncidentFingerprint,
+      });
+
+      const result = await storage.ingestProxmoxWebhookEvent({
+        source: "PVE",
+        eventType: "vzdump",
+        jobId: `backup-${suffix}`,
+        host: "pve1",
+        severity: "error",
+        status: "FAIL",
+        receivedAt,
+        title: "Backup failed",
+        message: "TASK ERROR",
+        fingerprint: sourceFingerprint,
+        payload: { test: true },
+      });
+
+      assert.equal(result.status, "processed");
+      if (result.status === "processed") {
+        createdEventIds.push(result.eventId);
+        assert.equal(result.jobId, job.id);
+        assert.equal(result.expectedRunId, run.id);
+      }
+
+      const [runAfter] = await db.select().from(expectedRuns).where(eq(expectedRuns.id, run.id));
+      assert.equal(runAfter.status, "FAIL");
+
+      const [eventAfter] = await db.select().from(events).where(eq(events.sourceFingerprint, sourceFingerprint));
+      assert.equal(eventAfter.sourceType, "PROXMOX_WEBHOOK");
+      assert.equal(eventAfter.expectedRunId, run.id);
+
+      const [incidentAfter] = await db
+        .select()
+        .from(incidents)
+        .where(eq(incidents.sourceFingerprint, createdIncidentFingerprints[0]));
+      assert.equal(incidentAfter.state, "OPEN");
+      assert.equal(incidentAfter.severity, "CRIT");
+
+      const okFingerprint = proxmoxWebhookFingerprint({
+        source: "PVE",
+        eventType: "vzdump",
+        jobId: `backup-${suffix}`,
+        host: "pve1",
+        timestamp: okReceivedAt,
+        severity: "info",
+      });
+      const okResult = await storage.ingestProxmoxWebhookEvent({
+        source: "PVE",
+        eventType: "vzdump",
+        jobId: `backup-${suffix}`,
+        host: "pve1",
+        severity: "info",
+        status: "OK",
+        receivedAt: okReceivedAt,
+        title: "Backup succeeded",
+        message: "OK",
+        fingerprint: okFingerprint,
+        payload: { test: true },
+      });
+
+      assert.equal(okResult.status, "processed");
+      if (okResult.status === "processed") {
+        createdEventIds.push(okResult.eventId);
+        assert.equal(okResult.expectedRunId, run.id);
+      }
+
+      const [runAfterOk] = await db.select().from(expectedRuns).where(eq(expectedRuns.id, run.id));
+      assert.equal(runAfterOk.status, "OK");
+
+      const [incidentAfterOk] = await db
+        .select()
+        .from(incidents)
+        .where(eq(incidents.sourceFingerprint, createdIncidentFingerprints[0]));
+      assert.equal(incidentAfterOk.state, "RESOLVED");
+
+      const duplicateFailResult = await storage.ingestProxmoxWebhookEvent({
+        source: "PVE",
+        eventType: "vzdump",
+        jobId: `backup-${suffix}`,
+        host: "pve1",
+        severity: "error",
+        status: "FAIL",
+        receivedAt,
+        title: "Backup failed",
+        message: "TASK ERROR",
+        fingerprint: sourceFingerprint,
+        payload: { test: true, duplicate: true },
+      });
+
+      assert.equal(duplicateFailResult.status, "processed");
+      if (duplicateFailResult.status === "processed") {
+        assert.equal(duplicateFailResult.duplicate, true);
+        assert.equal(duplicateFailResult.eventId, result.eventId);
+        assert.equal(duplicateFailResult.expectedRunId, run.id);
+        assert.equal(duplicateFailResult.eventStatus, "FAIL");
+      }
+
+      const [runAfterDuplicateFail] = await db.select().from(expectedRuns).where(eq(expectedRuns.id, run.id));
+      assert.equal(runAfterDuplicateFail.status, "OK");
+
+      const [incidentAfterDuplicateFail] = await db
+        .select()
+        .from(incidents)
+        .where(eq(incidents.sourceFingerprint, createdIncidentFingerprints[0]));
+      assert.equal(incidentAfterDuplicateFail.state, "RESOLVED");
+
+      const [eventAfterDuplicateFail] = await db.select().from(events).where(eq(events.sourceFingerprint, sourceFingerprint));
+      assert.equal(eventAfterDuplicateFail.status, "FAIL");
+      assert.equal(eventAfterDuplicateFail.receivedAt.toISOString(), receivedAt.toISOString());
+      assert.deepEqual(eventAfterDuplicateFail.payloadJson, { test: true });
+
+      const outsideWindowOkFingerprint = proxmoxWebhookFingerprint({
+        source: "PVE",
+        eventType: "vzdump",
+        jobId: `backup-${suffix}`,
+        host: "pve1",
+        timestamp: outsideWindowOkReceivedAt,
+        severity: "info",
+      });
+      const outsideWindowOkResult = await storage.ingestProxmoxWebhookEvent({
+        source: "PVE",
+        eventType: "vzdump",
+        jobId: `backup-${suffix}`,
+        host: "pve1",
+        severity: "info",
+        status: "OK",
+        receivedAt: outsideWindowOkReceivedAt,
+        title: "Backup succeeded",
+        message: "OK",
+        fingerprint: outsideWindowOkFingerprint,
+        payload: { test: true },
+      });
+
+      assert.equal(outsideWindowOkResult.status, "processed");
+      if (outsideWindowOkResult.status === "processed") {
+        createdEventIds.push(outsideWindowOkResult.eventId);
+        assert.equal(outsideWindowOkResult.expectedRunId, null);
+      }
+
+      const [oldRunIncidentAfterOk] = await db
+        .select()
+        .from(incidents)
+        .where(eq(incidents.sourceFingerprint, oldRunIncidentFingerprint));
+      assert.equal(oldRunIncidentAfterOk.state, "OPEN");
+    } finally {
+      if (createdIncidentFingerprints.length) {
+        await db.delete(incidents).where(inArray(incidents.sourceFingerprint, createdIncidentFingerprints));
+      }
+      if (createdEventIds.length) {
+        await db.delete(events).where(inArray(events.id, createdEventIds));
+      }
+      if (createdRunIds.length) {
+        await db.delete(expectedRuns).where(inArray(expectedRuns.id, createdRunIds));
+      }
+      if (createdJobIds.length) {
+        await db.delete(jobs).where(inArray(jobs.id, createdJobIds));
+      }
+      if (createdCustomerId) {
+        await db.delete(customers).where(eq(customers.id, createdCustomerId));
+      }
+    }
+  });
 }

@@ -3,7 +3,12 @@ import test from "node:test";
 
 process.env.DATABASE_URL ||= "postgres://user:password@localhost:5432/protectiveshell_test";
 
-const { backupEmailIncidentFingerprint, backupEmailIncidentPreview } = await import("./backupIncidents");
+const {
+  backupEmailIncidentFingerprint,
+  backupEmailIncidentPreview,
+  backupWebhookIncidentFingerprint,
+  backupWebhookIncidentPreview,
+} = await import("./backupIncidents");
 
 test("backupEmailIncidentFingerprint prefers expected-run fingerprints", () => {
   assert.equal(
@@ -63,4 +68,68 @@ test("backupEmailIncidentPreview resolves OK emails and ignores unknown emails",
     }),
     null,
   );
+});
+
+test("backupWebhookIncidentPreview opens and resolves webhook incidents", () => {
+  assert.equal(
+    backupWebhookIncidentFingerprint({
+      source: "PVE",
+      eventType: "vzdump",
+      webhookJobId: "backup-1",
+      host: "pve1",
+      expectedRunId: 42,
+    }),
+    "backup-status:expected-run:42",
+  );
+
+  const failed = backupWebhookIncidentPreview({
+    jobId: 3,
+    jobName: "PVE backup",
+    source: "PVE",
+    eventType: "vzdump",
+    webhookJobId: "backup-1",
+    host: "pve1",
+    sourceFingerprint: "webhook-fail",
+    status: "FAIL",
+    receivedAt: new Date("2026-06-30T12:00:00.000Z"),
+    title: "Backup failed",
+  });
+
+  assert.equal(failed?.action, "open");
+  assert.equal(failed?.sourceFingerprint, "backup-status:webhook:pve:vzdump:backup-1:pve1");
+  assert.equal(failed?.severity, "CRIT");
+
+  assert.deepEqual(
+    backupWebhookIncidentPreview({
+      jobId: 3,
+      source: "PVE",
+      eventType: "vzdump",
+      webhookJobId: "backup-1",
+      host: "pve1",
+      sourceFingerprint: "webhook-ok",
+      expectedRunId: 42,
+      status: "OK",
+      receivedAt: new Date("2026-06-30T12:00:00.000Z"),
+    }),
+    {
+      action: "resolve",
+      sourceFingerprint: "backup-status:expected-run:42",
+    },
+  );
+
+  const okWithoutRun = backupWebhookIncidentPreview({
+    jobId: 3,
+    source: "PVE",
+    eventType: "vzdump",
+    webhookJobId: "backup-1",
+    host: "pve1",
+    sourceFingerprint: "webhook-ok-later",
+    status: "OK",
+    receivedAt: new Date("2026-06-30T13:00:00.000Z"),
+  });
+
+  assert.deepEqual(okWithoutRun, {
+    action: "resolve",
+    sourceFingerprint: failed?.sourceFingerprint,
+  });
 });

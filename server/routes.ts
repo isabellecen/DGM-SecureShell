@@ -1,15 +1,23 @@
-import type { Express } from "express";
+import type { Express, RequestHandler } from "express";
 import type { Server } from "http";
-import { storage } from "./storage";
+import { storage, type IStorage } from "./storage";
 import { pollBackupTargetAndPersist, runProxmoxHostCheck } from "./monitoring";
 import { testImapConnection } from "./emailPoller";
 import { testSmtpConnection } from "./notificationService";
 import { assertMonitoredTargetAllowed } from "./egress";
+import {
+  parseProxmoxWebhookPayload,
+  PROXMOX_WEBHOOK_PATH,
+  PROXMOX_WEBHOOK_SECRET_SETTING,
+  proxmoxWebhookSecretFromHeaders,
+  proxmoxWebhookSecretMatches,
+} from "./proxmoxWebhook";
 import { z } from "zod";
 
 const idParamSchema = z.coerce.number().int().positive();
 const nullableIdSchema = z.union([z.coerce.number().int().positive(), z.null()]);
 const systemTypeSchema = z.enum(["VEEAM", "PBS", "SYNOLOGY"]);
+const webhookSourceSchema = z.enum(["PVE", "PBS"]);
 const backupTargetTypeSchema = z.enum(["SYNOLOGY", "PBS"]);
 const scheduleTimeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 const dayOfWeekSchema = z.enum([
@@ -42,6 +50,7 @@ const allowedSettingKeys = [
   "RETENTION_DAYS",
   "SSH_TIMEOUT",
   "DAILY_REPORT_TIME",
+  "PROXMOX_WEBHOOK_SECRET",
 ] as const;
 
 type SettingKey = (typeof allowedSettingKeys)[number];
@@ -73,6 +82,9 @@ const jobBaseSchema = z.object({
   enabled: z.boolean().default(true),
   longRunning: z.boolean().default(false),
   longWindowHours: z.coerce.number().int().min(1).max(336).default(24),
+  webhookSource: z.union([webhookSourceSchema, z.null()]).optional(),
+  webhookJobId: z.string().trim().max(255).nullable().optional(),
+  webhookHost: z.string().trim().max(255).nullable().optional(),
   daysOfWeek: z.array(dayOfWeekSchema).default([]),
 }).strict();
 
@@ -273,6 +285,52 @@ function assertJobPatchScheduleValid(
   }
 }
 
+function normalizeJobCreateData<T extends {
+  webhookSource?: "PVE" | "PBS" | null;
+  webhookJobId?: string | null;
+  webhookHost?: string | null;
+}>(data: T): T & { webhookSource: "PVE" | "PBS" | null; webhookJobId: string | null; webhookHost: string | null } {
+  const webhookSource = data.webhookSource ?? null;
+  return {
+    ...data,
+    webhookSource,
+    webhookJobId: webhookSource ? data.webhookJobId?.trim() || null : null,
+    webhookHost: webhookSource ? data.webhookHost?.trim() || null : null,
+  };
+}
+
+function normalizeJobPatchData<T extends {
+  webhookSource?: "PVE" | "PBS" | null;
+  webhookJobId?: string | null;
+  webhookHost?: string | null;
+}>(data: T): T {
+  const normalized = { ...data };
+  if ("webhookSource" in normalized && normalized.webhookSource == null) {
+    normalized.webhookSource = null;
+    normalized.webhookJobId = null;
+    normalized.webhookHost = null;
+    return normalized;
+  }
+  if ("webhookJobId" in normalized) {
+    normalized.webhookJobId = normalized.webhookJobId?.trim() || null;
+  }
+  if ("webhookHost" in normalized) {
+    normalized.webhookHost = normalized.webhookHost?.trim() || null;
+  }
+  return normalized;
+}
+
+function assertJobWebhookMappingValid(
+  existing: { webhookSource?: string | null; webhookJobId?: string | null },
+  data: { webhookSource?: string | null; webhookJobId?: string | null },
+) {
+  const webhookSource = data.webhookSource === undefined ? existing.webhookSource : data.webhookSource;
+  const webhookJobId = data.webhookJobId === undefined ? existing.webhookJobId : data.webhookJobId;
+  if (webhookSource && !webhookJobId?.trim()) {
+    throw badRequest("Webhook job ID is required when a webhook source is selected");
+  }
+}
+
 function defaultBackupTargetPort(type: z.infer<typeof backupTargetTypeSchema>): number {
   return type === "PBS" ? 8007 : 5001;
 }
@@ -318,10 +376,44 @@ async function assertRecipientsExist(recipientIds: number[]) {
   }
 }
 
+type ProxmoxWebhookStorage = Pick<IStorage, "getSettingValue" | "ingestProxmoxWebhookEvent">;
+
+export function createProxmoxWebhookHandler(webhookStorage: ProxmoxWebhookStorage = storage): RequestHandler {
+  return async (req, res) => {
+    const configuredSecret =
+      (await webhookStorage.getSettingValue(PROXMOX_WEBHOOK_SECRET_SETTING)) ||
+      process.env.PROXMOX_WEBHOOK_SECRET;
+
+    const providedSecret = proxmoxWebhookSecretFromHeaders({
+      authorization: req.get("authorization"),
+      webhookSecret: req.get("x-secureshell-webhook-secret"),
+    });
+    if (!proxmoxWebhookSecretMatches(providedSecret, configuredSecret)) {
+      return res.status(401).json({ message: "Invalid webhook secret" });
+    }
+
+    const parsed = parseProxmoxWebhookPayload(req.body);
+    if (parsed.kind === "invalid") {
+      return res.status(400).json({ message: parsed.message });
+    }
+    if (parsed.kind === "ignored") {
+      return res.status(202).json({ ok: true, ignored: true, reason: parsed.reason });
+    }
+
+    const result = await webhookStorage.ingestProxmoxWebhookEvent(parsed.event);
+    if (result.status === "ignored") {
+      return res.status(202).json({ ok: true, ignored: true, reason: result.reason });
+    }
+
+    return res.json({ ok: true, ...result });
+  };
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  app.post(PROXMOX_WEBHOOK_PATH, createProxmoxWebhookHandler());
 
   // Dashboard
   app.get("/api/dashboard/stats", async (_req, res) => {
@@ -363,20 +455,23 @@ export async function registerRoutes(
 
   app.post("/api/jobs", async (req, res) => {
     const data = jobCreateSchema.parse(req.body);
-    await assertCustomerReferenceExists(data.customerId);
+    const normalizedData = normalizeJobCreateData(data);
+    assertJobWebhookMappingValid({}, normalizedData);
+    await assertCustomerReferenceExists(normalizedData.customerId);
     const result = await storage.createJob({
-      ...data,
-      customerId: data.customerId ?? null,
+      ...normalizedData,
+      customerId: normalizedData.customerId ?? null,
     });
     res.status(201).json(result);
   });
 
   app.patch("/api/jobs/:id", async (req, res) => {
     const id = parseId(req.params.id);
-    const data = jobPatchSchema.parse(req.body);
+    const data = normalizeJobPatchData(jobPatchSchema.parse(req.body));
     const existing = await storage.getJob(id);
     if (!existing) return res.status(404).json({ message: "Not found" });
     assertJobPatchScheduleValid(existing, data);
+    assertJobWebhookMappingValid(existing, data);
     await assertCustomerReferenceExists(data.customerId);
     const result = await storage.updateJob(id, data);
     if (!result) return res.status(404).json({ message: "Not found" });
@@ -765,5 +860,8 @@ export const routeInternals = {
   paginationQuerySchema,
   assertRecipientsExist,
   assertJobPatchScheduleValid,
+  assertJobWebhookMappingValid,
+  normalizeJobCreateData,
+  normalizeJobPatchData,
   defaultBackupTargetPort,
 };

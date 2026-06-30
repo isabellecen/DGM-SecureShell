@@ -2,6 +2,7 @@ import type { Express, NextFunction, Request, Response } from "express";
 import { sql } from "drizzle-orm";
 import { db } from "./db";
 import { rateLimitHits } from "@shared/schema";
+import { PROXMOX_WEBHOOK_PATH } from "./proxmoxWebhook";
 
 type RateLimitOptions = {
   windowMs: number;
@@ -72,6 +73,10 @@ function positiveIntegerFromValue(value: string | undefined, fallback: number): 
 
 function loginRateLimitMax(): number {
   return positiveIntegerFromValue(process.env.LOGIN_RATE_LIMIT_MAX, 8);
+}
+
+function proxmoxWebhookRateLimitMax(): number {
+  return positiveIntegerFromValue(process.env.PROXMOX_WEBHOOK_RATE_LIMIT_MAX, 300);
 }
 
 export function enforceInsecureTargetPolicy() {
@@ -166,10 +171,19 @@ export function registerSecurity(app: Express) {
       windowMs: 15 * 60 * 1000,
     }),
   );
+  app.use(
+    PROXMOX_WEBHOOK_PATH,
+    createRateLimit({
+      keyPrefix: "proxmox-webhook",
+      max: proxmoxWebhookRateLimitMax(),
+      windowMs: 15 * 60 * 1000,
+    }),
+  );
 }
 
 export const securityInternals = {
   shouldSendHsts,
   productionContentSecurityPolicy,
   loginRateLimitMax,
+  proxmoxWebhookRateLimitMax,
 };

@@ -45,6 +45,9 @@ test("job workflow normalizes schedule and customer fields", () => {
       longRunning: false,
       longWindowHours: undefined,
       daysOfWeek: [],
+      webhookSource: null,
+      webhookJobId: null,
+      webhookHost: null,
     },
   );
 
@@ -72,6 +75,39 @@ test("job workflow normalizes schedule and customer fields", () => {
       longRunning: true,
       longWindowHours: 72,
       daysOfWeek: ["friday"],
+      webhookSource: null,
+      webhookJobId: null,
+      webhookHost: null,
+    },
+  );
+
+  assert.deepEqual(
+    buildJobPayload({
+      name: "PVE Backup",
+      systemType: "PBS",
+      customerId: null,
+      scheduleType: "daily",
+      scheduleTime: "02:00",
+      windowHours: "6",
+      enabled: true,
+      webhookSource: "PVE",
+      webhookJobId: " backup-123 ",
+      webhookHost: " pve1 ",
+    }),
+    {
+      name: "PVE Backup",
+      systemType: "PBS",
+      customerId: null,
+      scheduleType: "daily",
+      scheduleTime: "02:00",
+      windowHours: 6,
+      enabled: true,
+      longRunning: false,
+      longWindowHours: undefined,
+      daysOfWeek: [],
+      webhookSource: "PVE",
+      webhookJobId: "backup-123",
+      webhookHost: "pve1",
     },
   );
 });
@@ -152,6 +188,10 @@ test("email and settings workflows build normalized API payloads", () => {
   assert.deepEqual(buildSettingPayload("IMAP_PASS", CLEAR_SECRET_SETTING_VALUE), {
     key: "IMAP_PASS",
     value: CLEAR_SECRET_SETTING_VALUE,
+  });
+  assert.deepEqual(buildSettingPayload("PROXMOX_WEBHOOK_SECRET", "secret"), {
+    key: "PROXMOX_WEBHOOK_SECRET",
+    value: "secret",
   });
 });
 

@@ -365,6 +365,7 @@ The Settings page writes to the `app_settings` table. Secret values are encrypte
 | `RETENTION_DAYS` | Yes | Retention worker deletes old emails, events, expected runs, Proxmox checks, and non-open incidents after this many days. Defaults to `90`. |
 | `SSH_TIMEOUT` | Yes | SSH collector timeout in seconds. Defaults to `20`. |
 | `DAILY_REPORT_TIME` | Yes | Sends a daily operational summary at this local `HH:MM` time when SMTP and recipients are configured. |
+| `PROXMOX_WEBHOOK_SECRET` | Yes | Shared secret for PVE/PBS notification webhook ingestion. Encrypted when stored in Settings; environment value is used as a fallback. |
 
 ## Admin Authentication
 
@@ -432,9 +433,32 @@ Jobs live under **Backup Jobs**.
 | Window hours | Deadline window after scheduled time. If no matching event arrives before the deadline, the expected run becomes missing. |
 | Long-running job | Enables a separate long-running deadline window. |
 | Long window hours | Deadline window for long-running jobs. |
+| Proxmox webhook source | Optional `PVE` or `PBS` source for direct Proxmox notification ingest. |
+| Proxmox webhook job ID | Proxmox notification `fields.job-id` value to map to this job. Required when a webhook source is selected. |
+| Proxmox webhook host | Optional Proxmox notification `fields.hostname` value. Use this when multiple hosts can emit the same job ID. |
 | Enabled | Disabled jobs do not produce expected runs. |
 
 Expected runs are deduplicated by `(jobId, scheduledFor)`.
+
+## Proxmox Webhook Ingestion
+
+PVE and PBS notification webhooks can update Backup Job status without IMAP. Configure `PROXMOX_WEBHOOK_SECRET` in Settings, then point Proxmox webhook targets at:
+
+```text
+POST /api/integrations/proxmox/notifications
+Authorization: Bearer <secret>
+```
+
+Send JSON containing `source`, `severity`, `timestamp`, `title`, `message`, and `fields`. Use `source: "PVE"` for PVE `vzdump` events and `source: "PBS"` for PBS `sync`, `prune`, `verification`, or `tape-backup` events.
+
+Webhook ingestion maps Proxmox severity to backup status:
+
+- `error` -> `FAIL`
+- `warning` -> `WARN`
+- `info` or `notice` -> `OK`
+- anything else -> `UNKNOWN`
+
+The webhook is matched to a Backup Job by source, `fields.job-id`, and optionally `fields.hostname`. Unmatched or unsupported notifications return `202` with an ignored reason and do not update jobs.
 
 ## Job Rules And Email Matching
 

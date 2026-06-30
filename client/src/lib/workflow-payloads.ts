@@ -28,10 +28,14 @@ export type JobPayloadInput = {
   longRunning?: boolean;
   longWindowHours?: string | number;
   daysOfWeek?: string[];
+  webhookSource?: string | null;
+  webhookJobId?: string | null;
+  webhookHost?: string | null;
 };
 
 export function buildJobPayload(input: JobPayloadInput) {
   const longRunning = input.longRunning ?? false;
+  const webhookSource = input.webhookSource && input.webhookSource !== "none" ? input.webhookSource : null;
   return {
     name: input.name,
     systemType: input.systemType,
@@ -43,6 +47,9 @@ export function buildJobPayload(input: JobPayloadInput) {
     longRunning,
     longWindowHours: longRunning ? integerValue(input.longWindowHours, 24) : undefined,
     daysOfWeek: input.scheduleType === "weekly" ? input.daysOfWeek ?? [] : [],
+    webhookSource,
+    webhookJobId: webhookSource ? input.webhookJobId?.trim() || null : null,
+    webhookHost: webhookSource ? input.webhookHost?.trim() || null : null,
   };
 }
 

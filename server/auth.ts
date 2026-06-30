@@ -6,6 +6,7 @@ import connectPgSimple from "connect-pg-simple";
 import crypto from "crypto";
 import { pool } from "./db";
 import { storage } from "./storage";
+import { PROXMOX_WEBHOOK_PATH } from "./proxmoxWebhook";
 
 declare global {
   namespace Express {
@@ -200,6 +201,11 @@ export function registerAuth(app: Express) {
 }
 
 function requireAuth(req: Request, res: Response, next: NextFunction) {
+  const originalPath = req.originalUrl.split("?")[0];
+  if (req.method === "POST" && originalPath === PROXMOX_WEBHOOK_PATH) {
+    return next();
+  }
+
   if (req.isAuthenticated?.()) {
     return next();
   }
