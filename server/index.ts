@@ -145,6 +145,10 @@ app.use((req, res, next) => {
   httpServer.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
       console.error(`Port ${port} is already in use. Set PORT to a free port and restart.`);
+      console.error(`On Linux, check the existing listener with: sudo ss -ltnp 'sport = :${port}'`);
+      console.error(
+        "If this is an existing ProtectiveShell service, stop that service before starting another copy.",
+      );
       process.exit(1);
     }
 

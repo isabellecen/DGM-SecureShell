@@ -92,7 +92,7 @@ Sample data is never seeded automatically by development mode. Set `SEED_ON_BOOT
 
 ## Windows Note
 
-The npm scripts use `script/run-with-env.cjs` so `npm run dev` and `npm start` work across Linux/macOS shells and native Windows PowerShell.
+The npm scripts use small Node helpers so `npm run dev` and `npm start` work across Linux/macOS shells and native Windows PowerShell.
 
 If PowerShell blocks the `npm` shim with a script execution policy error, call the Windows command shim directly:
 

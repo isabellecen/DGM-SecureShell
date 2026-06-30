@@ -712,6 +712,35 @@ The host resolved to an address class ProtectiveShell refuses to monitor, such a
 
 This is a host policy issue blocking Vite/esbuild or tsx subprocesses. It can also prevent `npm.cmd run dev` because development mode compiles TypeScript through tsx. Use Node 20/22 on a machine or CI runner where Node child processes are allowed, or build on Linux and deploy `dist/`.
 
+### Start fails with `Production build not found: dist/index.cjs`
+
+`npm start` runs the production bundle from `dist/index.cjs`. Run `npm run build` after pulling code and before starting the service, or deploy the already-built `dist/` folder with the app. If the server installs production-only dependencies, build before pruning dev dependencies because the build uses Vite and esbuild.
+
+### Start fails with `Port 5000 is already in use`
+
+Something is already listening on the configured app port. On a VPS this is commonly an older ProtectiveShell process, a systemd service that is already running, or another web app using the same local port.
+
+Find the listener:
+
+```bash
+sudo ss -ltnp 'sport = :5000'
+```
+
+If it is the existing ProtectiveShell service, either use that running service instead of starting a second copy, or restart it after deploying updates:
+
+```bash
+sudo systemctl restart protectiveshell
+sudo systemctl status protectiveshell --no-pager
+```
+
+If another app needs port `5000`, choose a different internal port for ProtectiveShell:
+
+```bash
+PORT=5001 npm start
+```
+
+For a systemd deployment, change `PORT` in the app `.env`, run `sudo systemctl restart protectiveshell`, and update the reverse proxy upstream to match, for example `proxy_pass http://127.0.0.1:5001;`.
+
 ## Upgrade Checklist
 
 1. Back up PostgreSQL.
