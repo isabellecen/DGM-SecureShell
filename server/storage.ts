@@ -44,6 +44,7 @@ export type ProxmoxWebhookIngestResult =
       jobId: number;
       eventId: number;
       expectedRunId: number | null;
+      expectedRunLinkReason?: string;
       eventStatus: EmailEventStatus;
       duplicate: boolean;
     }
@@ -180,6 +181,10 @@ type WebhookRunWindow = {
   deadlineAt: Date;
 };
 
+type WebhookRunWindowResult =
+  | { status: "matched"; window: WebhookRunWindow }
+  | { status: "unmatched"; reason: string };
+
 function normalizedOptional(value: string | null | undefined): string | null {
   const trimmed = value?.trim().toLowerCase();
   return trimmed || null;
@@ -297,11 +302,11 @@ function weekdayName(date: Date, timezone: string): string {
   }).format(date).toLowerCase();
 }
 
-function webhookRunWindowForEvent(
+function webhookRunWindowForEventDiagnostic(
   job: WebhookScheduleJob,
   eventAt: Date,
   timezone: string,
-): WebhookRunWindow | null {
+): WebhookRunWindowResult {
   const [hoursRaw, minutesRaw] = job.scheduleTime.split(":");
   const hours = Number(hoursRaw);
   const minutes = Number(minutesRaw);
@@ -313,12 +318,18 @@ function webhookRunWindowForEvent(
     minutes < 0 ||
     minutes > 59
   ) {
-    return null;
+    return { status: "unmatched", reason: `invalid schedule time ${job.scheduleTime}` };
   }
 
   const windowHours = job.longRunning ? job.longWindowHours || job.windowHours : job.windowHours;
+  if (!Number.isFinite(windowHours) || windowHours <= 0) {
+    return { status: "unmatched", reason: `invalid window ${windowHours}h` };
+  }
+
   const catchupDays = Math.max(1, Math.ceil(windowHours / 24));
   const eventParts = toZonedParts(eventAt, timezone);
+  let skippedForWeekday = false;
+  const checkedWindows: string[] = [];
 
   for (let offset = 0; offset >= -catchupDays; offset -= 1) {
     const localDate = addLocalDays(eventParts, offset);
@@ -334,17 +345,35 @@ function webhookRunWindowForEvent(
     if (job.scheduleType === "weekly") {
       const dayName = weekdayName(scheduledFor, timezone);
       if (!job.daysOfWeek?.map((day) => day.toLowerCase()).includes(dayName)) {
+        skippedForWeekday = true;
         continue;
       }
     }
 
     const deadlineAt = new Date(scheduledFor.getTime() + windowHours * 60 * 60 * 1000);
+    checkedWindows.push(`${scheduledFor.toISOString()}..${deadlineAt.toISOString()}`);
     if (scheduledFor <= eventAt && deadlineAt >= eventAt) {
-      return { scheduledFor, deadlineAt };
+      return { status: "matched", window: { scheduledFor, deadlineAt } };
     }
   }
 
-  return null;
+  if (checkedWindows.length === 0 && skippedForWeekday) {
+    return { status: "unmatched", reason: `weekly schedule did not include ${weekdayName(eventAt, timezone)}` };
+  }
+
+  return {
+    status: "unmatched",
+    reason: `outside schedule window in ${timezone}; event=${eventAt.toISOString()} checked=${checkedWindows.join(", ") || "none"}`,
+  };
+}
+
+function webhookRunWindowForEvent(
+  job: WebhookScheduleJob,
+  eventAt: Date,
+  timezone: string,
+): WebhookRunWindow | null {
+  const result = webhookRunWindowForEventDiagnostic(job, eventAt, timezone);
+  return result.status === "matched" ? result.window : null;
 }
 
 function pruneRecipientFromRoutePayload(value: unknown, recipientId: number): unknown | typeof prunedRecipient {
@@ -1021,6 +1050,9 @@ export class DatabaseStorage implements IStorage {
           jobId: existingEvent.jobId,
           eventId: existingEvent.id,
           expectedRunId: existingEvent.expectedRunId ?? null,
+          expectedRunLinkReason: existingEvent.expectedRunId
+            ? "duplicate existing event was already linked"
+            : "duplicate existing event had no expected run",
           eventStatus: existingEvent.status as EmailEventStatus,
           duplicate: true,
         };
@@ -1036,6 +1068,7 @@ export class DatabaseStorage implements IStorage {
       }
 
       const job = match.job;
+      let expectedRunLinkReason = "no expected run linked";
       let [run] = await tx
         .select()
         .from(expectedRuns)
@@ -1049,6 +1082,9 @@ export class DatabaseStorage implements IStorage {
         )
         .orderBy(desc(expectedRuns.scheduledFor))
         .limit(1);
+      if (run) {
+        expectedRunLinkReason = "matched pending expected run";
+      }
 
       if (!run && input.status === "OK") {
         [run] = await tx
@@ -1064,14 +1100,23 @@ export class DatabaseStorage implements IStorage {
           )
           .orderBy(desc(expectedRuns.scheduledFor))
           .limit(1);
+        if (run) {
+          expectedRunLinkReason = "matched existing failed/warn expected run for OK webhook";
+        }
       }
 
       if (!run) {
-        for (const eventAt of [input.receivedAt, new Date()]) {
-          const window = webhookRunWindowForEvent(job, eventAt, timezone);
-          if (!window) {
+        const fallbackMisses: string[] = [];
+        for (const { label, eventAt } of [
+          { label: "webhook timestamp", eventAt: input.receivedAt },
+          { label: "receipt time", eventAt: new Date() },
+        ]) {
+          const windowResult = webhookRunWindowForEventDiagnostic(job, eventAt, timezone);
+          if (windowResult.status === "unmatched") {
+            fallbackMisses.push(`${label}: ${windowResult.reason}`);
             continue;
           }
+          const { window } = windowResult;
 
           const [insertedRun] = await tx
             .insert(expectedRuns)
@@ -1088,6 +1133,7 @@ export class DatabaseStorage implements IStorage {
 
           if (insertedRun) {
             run = insertedRun;
+            expectedRunLinkReason = `created missing expected run from ${label}`;
             break;
           }
 
@@ -1098,14 +1144,18 @@ export class DatabaseStorage implements IStorage {
               and(
                 eq(expectedRuns.jobId, job.id),
                 eq(expectedRuns.scheduledFor, window.scheduledFor),
-                inArray(expectedRuns.status, ["PENDING", "MISSING", "FAIL", "WARN"]),
+                inArray(expectedRuns.status, ["PENDING", "MISSING", "FAIL", "WARN", "OK"]),
               ),
             )
             .limit(1);
           if (existingRun) {
             run = existingRun;
+            expectedRunLinkReason = `reused existing ${existingRun.status} expected run from ${label}`;
             break;
           }
+        }
+        if (!run) {
+          expectedRunLinkReason = fallbackMisses.join("; ") || `no schedule window matched in ${timezone}`;
         }
       }
 
@@ -1139,6 +1189,9 @@ export class DatabaseStorage implements IStorage {
           jobId: conflictingEvent.jobId,
           eventId: conflictingEvent.id,
           expectedRunId: conflictingEvent.expectedRunId ?? null,
+          expectedRunLinkReason: conflictingEvent.expectedRunId
+            ? "conflicting event was already linked"
+            : "conflicting event had no expected run",
           eventStatus: conflictingEvent.status as EmailEventStatus,
           duplicate: true,
         };
@@ -1174,6 +1227,7 @@ export class DatabaseStorage implements IStorage {
         jobId: job.id,
         eventId: event.id,
         expectedRunId: run?.id ?? null,
+        expectedRunLinkReason,
         eventStatus: input.status,
         duplicate: false,
       };
@@ -1415,4 +1469,5 @@ export const storageInternals = {
   shouldPruneRecipientRoutesForUpdate,
   selectWebhookJobMatch,
   webhookRunWindowForEvent,
+  webhookRunWindowForEventDiagnostic,
 };

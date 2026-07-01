@@ -129,3 +129,24 @@ test("webhook run window supports long jobs crossing local days", () => {
   assert.equal(window.scheduledFor.toISOString(), "2026-07-02T06:00:00.000Z");
   assert.equal(window.deadlineAt.toISOString(), "2026-07-02T12:00:00.000Z");
 });
+
+test("webhook run window diagnostic explains timezone window misses", () => {
+  const result = storageInternals.webhookRunWindowForEventDiagnostic(
+    {
+      scheduleType: "daily",
+      scheduleTime: "11:00",
+      daysOfWeek: [],
+      windowHours: 6,
+      longRunning: false,
+      longWindowHours: 24,
+    },
+    new Date("2026-07-01T19:50:29.000Z"),
+    "UTC",
+  );
+
+  assert.equal(result.status, "unmatched");
+  if (result.status === "unmatched") {
+    assert.match(result.reason, /outside schedule window in UTC/);
+    assert.match(result.reason, /2026-07-01T11:00:00.000Z..2026-07-01T17:00:00.000Z/);
+  }
+});

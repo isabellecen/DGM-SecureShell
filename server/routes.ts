@@ -453,6 +453,7 @@ function auditProcessedProxmoxWebhook(
     matchedJobId: number;
     eventId: number;
     expectedRunId: number | null;
+    expectedRunLinkReason?: string;
     eventStatus: string;
     duplicate: boolean;
     payload?: unknown;
@@ -464,12 +465,13 @@ function auditProcessedProxmoxWebhook(
 
   const identity = summarizeWebhookIdentity(input);
   const expectedRun = input.expectedRunId ? `expected-run=#${input.expectedRunId}` : "expected-run=none";
+  const runLinkReason = input.expectedRunLinkReason ? ` run-link=${input.expectedRunLinkReason}` : "";
   void webhookStorage.createAuditLog({
     actor: "system",
     action: "process",
     entityType: "proxmox-webhook",
     entityId: String(input.eventId),
-    summary: `Processed Proxmox webhook: status=${input.eventStatus} job=#${input.matchedJobId} ${expectedRun} duplicate=${input.duplicate ? "yes" : "no"} (${identity})`,
+    summary: `Processed Proxmox webhook: status=${input.eventStatus} job=#${input.matchedJobId} ${expectedRun}${runLinkReason} duplicate=${input.duplicate ? "yes" : "no"} (${identity})`,
     metadataJson: {
       source: input.source || null,
       jobId: input.jobId || null,
@@ -477,6 +479,7 @@ function auditProcessedProxmoxWebhook(
       matchedJobId: input.matchedJobId,
       eventId: input.eventId,
       expectedRunId: input.expectedRunId,
+      expectedRunLinkReason: input.expectedRunLinkReason || null,
       eventStatus: input.eventStatus,
       duplicate: input.duplicate,
       payload: input.payload,
@@ -536,6 +539,7 @@ export function createProxmoxWebhookHandler(webhookStorage: ProxmoxWebhookStorag
       matchedJobId: result.jobId,
       eventId: result.eventId,
       expectedRunId: result.expectedRunId,
+      expectedRunLinkReason: result.expectedRunLinkReason,
       eventStatus: result.eventStatus,
       duplicate: result.duplicate,
       payload: parsed.event.payload,
