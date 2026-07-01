@@ -12,6 +12,8 @@ test("job display status is based on observed job data instead of enabled state"
   assert.equal(jobDisplayStatus({ enabled: true }), "UNKNOWN");
   assert.equal(jobStatusDetail({ enabled: true }), "No runs yet");
   assert.equal(jobDisplayStatus({ enabled: true, latestEventStatus: "OK" }), "OK");
+  assert.equal(jobStatusDetail({ enabled: true, latestEventStatus: "OK" }), "Latest observed event");
   assert.equal(jobDisplayStatus({ enabled: true, latestRunStatus: "FAIL", latestEventStatus: "OK" }), "FAIL");
+  assert.equal(jobStatusDetail({ enabled: true, latestRunStatus: "FAIL", latestEventStatus: "OK" }), "Latest tracked run");
   assert.equal(jobDisplayStatus({ enabled: false, latestRunStatus: "OK" }), "DISABLED");
 });

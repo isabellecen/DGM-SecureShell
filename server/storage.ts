@@ -616,6 +616,7 @@ export class DatabaseStorage implements IStorage {
           SELECT ${expectedRuns.status}
           FROM ${expectedRuns}
           WHERE ${expectedRuns.jobId} = ${jobs.id}
+            AND ${expectedRuns.scheduledFor} <= now()
           ORDER BY ${expectedRuns.scheduledFor} DESC
           LIMIT 1
         )`.as("latest_run_status"),

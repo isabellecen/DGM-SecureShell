@@ -22,6 +22,6 @@ export function jobDisplayStatus(job: JobDisplayInput): string {
 export function jobStatusDetail(job: JobDisplayInput): string {
   if (!job.enabled) return "Disabled";
   if (job.latestRunStatus) return "Latest tracked run";
-  if (job.latestEventStatus) return "Latest email event";
+  if (job.latestEventStatus) return "Latest observed event";
   return "No runs yet";
 }
