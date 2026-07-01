@@ -29,6 +29,7 @@ function validWebhookBody() {
 async function postWebhook(options: {
   configuredSecret?: string | null;
   headerSecret?: string | null;
+  headerName?: "authorization" | "x-secureshell-webhook-secret" | "x-protectiveshell-webhook-secret" | "x-webhook-secret";
   body?: unknown;
   ingestResult?: Awaited<ReturnType<FakeWebhookStorage["ingestProxmoxWebhookEvent"]>>;
 } = {}) {
@@ -62,7 +63,8 @@ async function postWebhook(options: {
     const headerSecret = options.headerSecret === null ? undefined : options.headerSecret ?? "secret";
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (headerSecret) {
-      headers.authorization = `Bearer ${headerSecret}`;
+      const headerName = options.headerName ?? "authorization";
+      headers[headerName] = headerName === "authorization" ? `Bearer ${headerSecret}` : headerSecret;
     }
 
     const response = await fetch(`http://127.0.0.1:${port}${PROXMOX_WEBHOOK_PATH}`, {
@@ -270,6 +272,21 @@ test("Proxmox webhook route rejects missing and wrong secrets", async () => {
       body: { message: "Invalid webhook secret" },
       ingestCalls: [],
     },
+  );
+});
+
+test("Proxmox webhook route accepts custom secret headers", async () => {
+  assert.equal(
+    (await postWebhook({ headerName: "x-secureshell-webhook-secret" })).status,
+    200,
+  );
+  assert.equal(
+    (await postWebhook({ headerName: "x-protectiveshell-webhook-secret" })).status,
+    200,
+  );
+  assert.equal(
+    (await postWebhook({ headerName: "x-webhook-secret" })).status,
+    200,
   );
 });
 

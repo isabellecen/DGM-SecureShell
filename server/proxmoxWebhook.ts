@@ -172,13 +172,23 @@ export function parseProxmoxWebhookPayload(value: unknown): ProxmoxWebhookParseR
 export function proxmoxWebhookSecretFromHeaders(input: {
   authorization?: string;
   webhookSecret?: string;
+  protectiveShellWebhookSecret?: string;
+  genericWebhookSecret?: string;
 }): string | undefined {
   const auth = input.authorization?.trim();
   const bearer = auth?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
   if (bearer) return bearer;
 
-  const headerSecret = input.webhookSecret?.trim();
-  return headerSecret || undefined;
+  for (const value of [
+    input.webhookSecret,
+    input.protectiveShellWebhookSecret,
+    input.genericWebhookSecret,
+  ]) {
+    const headerSecret = value?.trim();
+    if (headerSecret) return headerSecret;
+  }
+
+  return undefined;
 }
 
 export function proxmoxWebhookSecretMatches(provided: string | undefined, configured: string | undefined): boolean {

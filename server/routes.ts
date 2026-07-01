@@ -376,7 +376,73 @@ async function assertRecipientsExist(recipientIds: number[]) {
   }
 }
 
-type ProxmoxWebhookStorage = Pick<IStorage, "getSettingValue" | "ingestProxmoxWebhookEvent">;
+type ProxmoxWebhookStorage =
+  Pick<IStorage, "getSettingValue" | "ingestProxmoxWebhookEvent"> &
+  Partial<Pick<IStorage, "createAuditLog">>;
+
+function webhookBodyField(body: unknown, names: string[]): string | null {
+  const fields = body && typeof body === "object" ? (body as { fields?: unknown }).fields : undefined;
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) {
+    return null;
+  }
+
+  for (const name of names) {
+    const value = (fields as Record<string, unknown>)[name];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+  }
+
+  return null;
+}
+
+function webhookBodySource(body: unknown): string | null {
+  const source = body && typeof body === "object" ? (body as { source?: unknown }).source : undefined;
+  return typeof source === "string" && source.trim() ? source.trim().toUpperCase() : null;
+}
+
+function summarizeWebhookIdentity(input: {
+  source?: string | null;
+  jobId?: string | null;
+  host?: string | null;
+}) {
+  return [
+    `source=${input.source || "unknown"}`,
+    `job-id=${input.jobId || "unknown"}`,
+    `host=${input.host || "none"}`,
+  ].join(" ");
+}
+
+function auditIgnoredProxmoxWebhook(
+  webhookStorage: ProxmoxWebhookStorage,
+  input: {
+    reason: string;
+    source?: string | null;
+    jobId?: string | null;
+    host?: string | null;
+    payload?: unknown;
+  },
+) {
+  if (!webhookStorage.createAuditLog) {
+    return;
+  }
+
+  const identity = summarizeWebhookIdentity(input);
+  void webhookStorage.createAuditLog({
+    actor: "system",
+    action: "ignore",
+    entityType: "proxmox-webhook",
+    summary: `Ignored Proxmox webhook: ${input.reason} (${identity})`,
+    metadataJson: {
+      reason: input.reason,
+      source: input.source || null,
+      jobId: input.jobId || null,
+      host: input.host || null,
+      payload: input.payload,
+    },
+  }).catch((err) => {
+    console.warn("Proxmox webhook audit log write failed:", err);
+  });
+}
 
 export function createProxmoxWebhookHandler(webhookStorage: ProxmoxWebhookStorage = storage): RequestHandler {
   return async (req, res) => {
@@ -387,6 +453,8 @@ export function createProxmoxWebhookHandler(webhookStorage: ProxmoxWebhookStorag
     const providedSecret = proxmoxWebhookSecretFromHeaders({
       authorization: req.get("authorization"),
       webhookSecret: req.get("x-secureshell-webhook-secret"),
+      protectiveShellWebhookSecret: req.get("x-protectiveshell-webhook-secret"),
+      genericWebhookSecret: req.get("x-webhook-secret"),
     });
     if (!proxmoxWebhookSecretMatches(providedSecret, configuredSecret)) {
       return res.status(401).json({ message: "Invalid webhook secret" });
@@ -397,11 +465,25 @@ export function createProxmoxWebhookHandler(webhookStorage: ProxmoxWebhookStorag
       return res.status(400).json({ message: parsed.message });
     }
     if (parsed.kind === "ignored") {
+      auditIgnoredProxmoxWebhook(webhookStorage, {
+        reason: parsed.reason,
+        source: webhookBodySource(req.body),
+        jobId: webhookBodyField(req.body, ["job-id", "job_id", "jobid"]),
+        host: webhookBodyField(req.body, ["hostname", "host", "node", "node-name", "node_name"]),
+        payload: req.body,
+      });
       return res.status(202).json({ ok: true, ignored: true, reason: parsed.reason });
     }
 
     const result = await webhookStorage.ingestProxmoxWebhookEvent(parsed.event);
     if (result.status === "ignored") {
+      auditIgnoredProxmoxWebhook(webhookStorage, {
+        reason: result.reason,
+        source: parsed.event.source,
+        jobId: parsed.event.jobId,
+        host: parsed.event.host,
+        payload: parsed.event.payload,
+      });
       return res.status(202).json({ ok: true, ignored: true, reason: result.reason });
     }
 

@@ -446,10 +446,26 @@ PVE and PBS notification webhooks can update Backup Job status without IMAP. Con
 
 ```text
 POST /api/integrations/proxmox/notifications
-Authorization: Bearer <secret>
+Content-Type: application/json
+X-SecureShell-Webhook-Secret: <secret>
 ```
 
+`Authorization: Bearer <secret>` is also accepted, as are `X-ProtectiveShell-Webhook-Secret` and `X-Webhook-Secret`.
+
 Send JSON containing `source`, `severity`, `timestamp`, `title`, `message`, and `fields`. Use `source: "PVE"` for PVE `vzdump` events and `source: "PBS"` for PBS `sync`, `prune`, `verification`, or `tape-backup` events.
+
+Use Proxmox JSON template rendering for dynamic values so multiline backup messages are escaped correctly:
+
+```json
+{
+  "source": "PVE",
+  "severity": {{ json severity }},
+  "timestamp": {{ json timestamp }},
+  "title": {{ json title }},
+  "message": {{ json message }},
+  "fields": {{ json fields }}
+}
+```
 
 Webhook ingestion maps Proxmox severity to backup status:
 

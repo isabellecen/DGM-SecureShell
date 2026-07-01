@@ -594,18 +594,18 @@ export default function Settings() {
       : `${window.location.origin}/api/integrations/proxmox/notifications`;
   const pveWebhookBodyTemplate = `{
   "source": "PVE",
-  "severity": "{{ severity }}",
-  "timestamp": "{{ timestamp }}",
-  "title": "{{ title }}",
-  "message": "{{ message }}",
+  "severity": {{ json severity }},
+  "timestamp": {{ json timestamp }},
+  "title": {{ json title }},
+  "message": {{ json message }},
   "fields": {{ json fields }}
 }`;
   const pbsWebhookBodyTemplate = `{
   "source": "PBS",
-  "severity": "{{ severity }}",
-  "timestamp": "{{ timestamp }}",
-  "title": "{{ title }}",
-  "message": "{{ message }}",
+  "severity": {{ json severity }},
+  "timestamp": {{ json timestamp }},
+  "title": {{ json title }},
+  "message": {{ json message }},
   "fields": {{ json fields }}
 }`;
 
@@ -812,7 +812,14 @@ export default function Settings() {
                 </div>
               </div>
               <div className="space-y-1.5">
-                <Label>Header</Label>
+                <Label>PVE Headers</Label>
+                <pre className="overflow-x-auto rounded-md border bg-muted p-3 text-xs">
+                  Content-Type: application/json{"\n"}
+                  X-SecureShell-Webhook-Secret: {"<secret>"}
+                </pre>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Alternate Auth Header</Label>
                 <pre className="overflow-x-auto rounded-md border bg-muted p-3 text-xs">
                   Authorization: Bearer {"<secret>"}
                 </pre>

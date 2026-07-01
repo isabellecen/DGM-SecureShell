@@ -121,6 +121,14 @@ test("Proxmox webhook secret accepts bearer or custom header values", () => {
     proxmoxWebhookSecretFromHeaders({ webhookSecret: "abc123" }),
     "abc123",
   );
+  assert.equal(
+    proxmoxWebhookSecretFromHeaders({ protectiveShellWebhookSecret: "abc123" }),
+    "abc123",
+  );
+  assert.equal(
+    proxmoxWebhookSecretFromHeaders({ genericWebhookSecret: "abc123" }),
+    "abc123",
+  );
   assert.equal(proxmoxWebhookSecretMatches("abc123", "abc123"), true);
   assert.equal(proxmoxWebhookSecretMatches("wrong", "abc123"), false);
   assert.equal(proxmoxWebhookSecretMatches(undefined, "abc123"), false);
