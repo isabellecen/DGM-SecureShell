@@ -444,6 +444,48 @@ function auditIgnoredProxmoxWebhook(
   });
 }
 
+function auditProcessedProxmoxWebhook(
+  webhookStorage: ProxmoxWebhookStorage,
+  input: {
+    source?: string | null;
+    jobId?: string | null;
+    host?: string | null;
+    matchedJobId: number;
+    eventId: number;
+    expectedRunId: number | null;
+    eventStatus: string;
+    duplicate: boolean;
+    payload?: unknown;
+  },
+) {
+  if (!webhookStorage.createAuditLog) {
+    return;
+  }
+
+  const identity = summarizeWebhookIdentity(input);
+  const expectedRun = input.expectedRunId ? `expected-run=#${input.expectedRunId}` : "expected-run=none";
+  void webhookStorage.createAuditLog({
+    actor: "system",
+    action: "process",
+    entityType: "proxmox-webhook",
+    entityId: String(input.eventId),
+    summary: `Processed Proxmox webhook: status=${input.eventStatus} job=#${input.matchedJobId} ${expectedRun} duplicate=${input.duplicate ? "yes" : "no"} (${identity})`,
+    metadataJson: {
+      source: input.source || null,
+      jobId: input.jobId || null,
+      host: input.host || null,
+      matchedJobId: input.matchedJobId,
+      eventId: input.eventId,
+      expectedRunId: input.expectedRunId,
+      eventStatus: input.eventStatus,
+      duplicate: input.duplicate,
+      payload: input.payload,
+    },
+  }).catch((err) => {
+    console.warn("Proxmox webhook audit log write failed:", err);
+  });
+}
+
 export function createProxmoxWebhookHandler(webhookStorage: ProxmoxWebhookStorage = storage): RequestHandler {
   return async (req, res) => {
     const configuredSecret =
@@ -487,6 +529,17 @@ export function createProxmoxWebhookHandler(webhookStorage: ProxmoxWebhookStorag
       return res.status(202).json({ ok: true, ignored: true, reason: result.reason });
     }
 
+    auditProcessedProxmoxWebhook(webhookStorage, {
+      source: parsed.event.source,
+      jobId: parsed.event.jobId,
+      host: parsed.event.host,
+      matchedJobId: result.jobId,
+      eventId: result.eventId,
+      expectedRunId: result.expectedRunId,
+      eventStatus: result.eventStatus,
+      duplicate: result.duplicate,
+      payload: parsed.event.payload,
+    });
     return res.json({ ok: true, ...result });
   };
 }
